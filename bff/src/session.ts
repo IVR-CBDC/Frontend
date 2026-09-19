@@ -3,7 +3,10 @@ import { decodeJwt } from "jose";
 import type { Config } from "./config.js";
 import { ApiError } from "./errors.js";
 
-const COOKIE_NAME = "session";
+// Экспортируется, чтобы ws/hub.ts мог достать ту же cookie при апгрейде
+// WebSocket без дублирования имени — cookie-parser там не подключён (это
+// сырой http.IncomingMessage до Express), но имя cookie должно совпадать.
+export const COOKIE_NAME = "session";
 const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
 function getConfig(app: Application): Config {

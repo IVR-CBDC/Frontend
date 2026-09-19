@@ -11,7 +11,7 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
     authUrl: "http://auth.test",
     coreUrl: "http://core.test",
     commissionUrl: "http://commission.test",
-    redisUrl: "",
+    redisUrl: "redis://redis.test:6379",
     cookieSecure: false,
     allowedOrigins: ["http://localhost:5173"],
     upstreamTimeoutMs: 1000,

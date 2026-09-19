@@ -35,10 +35,19 @@ function requireEnv(name: string): string {
 // обнаружилось бы только при первом реальном запросе, а не при старте
 // процесса. requireEnv здесь превращает это в понятную ошибку сразу при
 // запуске, а не в неотличимый от сетевого сбоя 503 на первый живой запрос.
+//
+// REDIS_URL прошёл по такому же пути в задаче 4: раньше был необязательным и
+// по умолчанию пустой строкой, потому что WS-хаб был мок-заглушкой и Redis не
+// трогал. Теперь initWebSocketHub() поднимает по нему ioredis-подписчика —
+// пустая строка привела бы либо к падению уже во время старта сервера в
+// неудобном месте, либо (в зависимости от того, как ioredis трактует пустую
+// строку) к тихой попытке подключиться к localhost:6379, что для сервиса,
+// который обязан доставлять события сделок, хуже честного отказа при старте.
 export function loadConfig(): Config {
   const authUrl = requireEnv("AUTH_URL");
   const coreUrl = requireEnv("CORE_URL");
   const commissionUrl = requireEnv("COMMISSION_URL");
+  const redisUrl = requireEnv("REDIS_URL");
   const allowedOrigins = requireEnv("ALLOWED_ORIGINS")
     .split(",")
     .map((origin) => origin.trim())
@@ -53,7 +62,7 @@ export function loadConfig(): Config {
     authUrl,
     coreUrl,
     commissionUrl,
-    redisUrl: process.env.REDIS_URL ?? "",
+    redisUrl,
     cookieSecure: process.env.COOKIE_SECURE === "true",
     allowedOrigins,
     upstreamTimeoutMs: Number(process.env.UPSTREAM_TIMEOUT_MS) || 5000,
