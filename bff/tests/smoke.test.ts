@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 import request from "supertest";
 import { createApp } from "../src/app.js";
+import { testConfig } from "./helpers/config.js";
 
 describe("BFF", () => {
   it("отвечает на /health", async () => {
-    const response = await request(createApp()).get("/health");
+    const response = await request(createApp(testConfig())).get("/health");
 
     expect(response.status).toBe(200);
     expect(response.body.status).toBe("ok");

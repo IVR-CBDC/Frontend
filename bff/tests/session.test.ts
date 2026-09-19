@@ -1,0 +1,163 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import request from "supertest";
+import { UnsecuredJWT } from "jose";
+import { createApp } from "../src/app.js";
+import { testConfig } from "./helpers/config.js";
+
+// decodeJwt в session.ts не проверяет подпись, так что для тестов достаточно
+// unsecured-токена (alg: none) с нужным exp — этого хватает, чтобы проверить
+// логику Max-Age, не поднимая настоящий service-auth.
+function tokenExpiringIn(seconds: number): string {
+  return new UnsecuredJWT({})
+    .setIssuedAt()
+    .setExpirationTime(Math.floor(Date.now() / 1000) + seconds)
+    .encode();
+}
+
+function stubFetchOnce(status: number, body: unknown): void {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockResolvedValue(new Response(JSON.stringify(body), { status })),
+  );
+}
+
+function parseSetCookie(response: request.Response): string {
+  const raw = response.headers["set-cookie"];
+  const header = Array.isArray(raw) ? raw[0] : raw;
+  if (!header) {
+    throw new Error("ответ не содержит Set-Cookie");
+  }
+  return header;
+}
+
+describe("session cookie", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("успешный логин ставит HttpOnly/SameSite=Strict/Path=/ cookie и не возвращает токен в теле", async () => {
+    stubFetchOnce(200, { user_id: "u1", company_id: "c1", token: tokenExpiringIn(3600) });
+    const app = createApp(testConfig());
+
+    const response = await request(app)
+      .post("/api/auth/login")
+      .set("Origin", "http://localhost:5173")
+      .send({ login: "a", password: "b" });
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ user_id: "u1", company_id: "c1" });
+    expect(response.body.token).toBeUndefined();
+
+    const cookie = parseSetCookie(response);
+    expect(cookie).toMatch(/^session=/);
+    expect(cookie).toMatch(/HttpOnly/i);
+    expect(cookie).toMatch(/SameSite=Strict/i);
+    expect(cookie).toMatch(/Path=\//);
+    expect(cookie).not.toMatch(/Secure/i);
+  });
+
+  it("COOKIE_SECURE=true добавляет флаг Secure к cookie", async () => {
+    stubFetchOnce(200, { user_id: "u1", company_id: "c1", token: tokenExpiringIn(3600) });
+    const app = createApp(testConfig({ cookieSecure: true }));
+
+    const response = await request(app)
+      .post("/api/auth/login")
+      .set("Origin", "http://localhost:5173")
+      .send({ login: "a", password: "b" });
+
+    expect(parseSetCookie(response)).toMatch(/Secure/i);
+  });
+
+  it("GET /api/auth/me без cookie отвечает 401 UNAUTHORIZED", async () => {
+    const app = createApp(testConfig());
+
+    const response = await request(app).get("/api/auth/me");
+
+    expect(response.status).toBe(401);
+    expect(response.body.code).toBe("UNAUTHORIZED");
+  });
+
+  it("GET /api/auth/me с cookie проксирует токен в Authorization: Bearer upstream'у", async () => {
+    const token = tokenExpiringIn(3600);
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          user_id: "u1",
+          login: "a",
+          name: "Имя",
+          company: { id: "c1", name: "ООО Ромашка", inn: "7736050003" },
+        }),
+        { status: 200 },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const app = createApp(testConfig());
+
+    const response = await request(app).get("/api/auth/me").set("Cookie", `session=${token}`);
+
+    expect(response.status).toBe(200);
+    expect(response.body.user_id).toBe("u1");
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const headers = init.headers as Record<string, string>;
+    expect(headers.Authorization).toBe(`Bearer ${token}`);
+  });
+
+  it("POST /api/auth/logout отвечает 204 и гасит cookie", async () => {
+    const app = createApp(testConfig());
+
+    const response = await request(app).post("/api/auth/logout").set("Origin", "http://localhost:5173");
+
+    expect(response.status).toBe(204);
+    const cookie = parseSetCookie(response);
+    expect(cookie).toMatch(/session=;/);
+    const maxAgeMatch = /Max-Age=(-?\d+)/i.exec(cookie);
+    const expiresMatch = /Expires=([^;]+)/i.exec(cookie);
+    const clearedByMaxAge = maxAgeMatch ? Number(maxAgeMatch[1]) <= 0 : false;
+    const clearedByExpires = expiresMatch ? new Date(expiresMatch[1]).getTime() < Date.now() : false;
+    expect(clearedByMaxAge || clearedByExpires).toBe(true);
+  });
+});
+
+describe("checkOrigin", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("мутирующий запрос с чужим Origin получает 403 FORBIDDEN_ORIGIN", async () => {
+    const app = createApp(testConfig());
+
+    const response = await request(app)
+      .post("/api/auth/logout")
+      .set("Origin", "http://evil.example");
+
+    expect(response.status).toBe(403);
+    expect(response.body.code).toBe("FORBIDDEN_ORIGIN");
+  });
+
+  it("мутирующий запрос без Origin вообще получает 403 FORBIDDEN_ORIGIN", async () => {
+    const app = createApp(testConfig());
+
+    const response = await request(app).post("/api/auth/logout");
+
+    expect(response.status).toBe(403);
+    expect(response.body.code).toBe("FORBIDDEN_ORIGIN");
+  });
+
+  it("мутирующий запрос с разрешённым Origin проходит", async () => {
+    const app = createApp(testConfig());
+
+    const response = await request(app)
+      .post("/api/auth/logout")
+      .set("Origin", "http://localhost:5173");
+
+    expect(response.status).toBe(204);
+  });
+
+  it("GET с чужим Origin не блокируется", async () => {
+    const app = createApp(testConfig());
+
+    const response = await request(app).get("/health").set("Origin", "http://evil.example");
+
+    expect(response.status).toBe(200);
+  });
+});
