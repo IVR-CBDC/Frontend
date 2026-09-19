@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../../api/client";
+import { ApiError } from "../../api/errors";
 import type { NotificationItem } from "../../types/api";
 
 const severityColor: Record<NotificationItem["severity"], string> = {
@@ -12,9 +13,13 @@ interface Props {
   open: boolean;
   onClose: () => void;
   refreshKey: number;
+  // Сообщает наверх, что уведомление отмечено прочитанным — так шапка может
+  // уменьшить бейдж непрочитанных, не гоняя из-за одного клика отдельный
+  // перезапрос всего дашборда.
+  onRead?: (id: string) => void;
 }
 
-export function NotificationsDrawer({ open, onClose, refreshKey }: Props) {
+export function NotificationsDrawer({ open, onClose, refreshKey, onRead }: Props) {
   const [items, setItems] = useState<NotificationItem[]>([]);
 
   useEffect(() => {
@@ -22,8 +27,18 @@ export function NotificationsDrawer({ open, onClose, refreshKey }: Props) {
   }, [open, refreshKey]);
 
   async function markRead(id: string) {
-    await api.markNotificationRead(id);
+    try {
+      await api.markNotificationRead(id);
+    } catch (e) {
+      // 404 — уведомление на бэкенде уже недоступно (например, устарело
+      // между открытием дровера и кликом). Для пользователя результат тот
+      // же: он его больше не видит непрочитанным, поэтому это не сбой.
+      // Любая другая ошибка — не трогаем локальное состояние, пусть
+      // пробует ещё раз.
+      if (!(e instanceof ApiError && e.status === 404)) return;
+    }
     setItems((prev) => prev.map((n) => (n.id === id ? { ...n, read: true } : n)));
+    onRead?.(id);
   }
 
   if (!open) return null;

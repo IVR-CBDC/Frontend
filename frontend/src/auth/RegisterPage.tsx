@@ -74,7 +74,12 @@ export function RegisterPage() {
               type="text"
               inputMode="numeric"
               value={inn}
-              onChange={(e) => setInn(e.target.value)}
+              onChange={(e) => {
+                setInn(e.target.value);
+                // Подсказка про формат ИНН иначе висит до следующего submit,
+                // даже когда пользователь уже её исправляет.
+                if (innError) setInnError(null);
+              }}
               required
             />
             {innError && <span className="field-error">{innError}</span>}

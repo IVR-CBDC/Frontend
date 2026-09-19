@@ -52,6 +52,20 @@ describe("RegisterPage", () => {
     expect(fetchMock).not.toHaveBeenCalledWith("/api/auth/register", expect.anything());
   });
 
+  it("подсказка про формат ИНН гаснет по мере редактирования поля, не дожидаясь следующего submit", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await fillCommonFields(user);
+    await user.type(screen.getByLabelText("ИНН"), "123");
+    await user.click(screen.getByRole("button", { name: "Зарегистрироваться" }));
+    expect(screen.getByText("ИНН должен состоять из 10 цифр")).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("ИНН"), "4");
+
+    expect(screen.queryByText("ИНН должен состоять из 10 цифр")).not.toBeInTheDocument();
+  });
+
   it("отправляет company_name и inn вместе с login/password", async () => {
     const user = userEvent.setup();
     let registered = false;

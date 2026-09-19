@@ -18,7 +18,13 @@ export class ApiError extends Error {
 // годится" — BFF уже погасил cookie на своей стороне (Set-Cookie с истёкшей
 // датой), так что SPA остаётся только перевести приложение в anonymous и
 // увести на /login, не пытаясь ничего восстановить.
-const AUTH_ERROR_CODES = new Set(["UNAUTHORIZED", "TOKEN_EXPIRED", "INVALID_TOKEN"]);
+//
+// UNAUTHORIZED сюда намеренно не входит: это просто "нет cookie вовсе" —
+// нормальный ответ для первого /api/auth/me никогда не заходившего
+// посетителя, а не признак истёкшей сессии. Если его сюда добавить, самый
+// первый /auth/me от anonymous-пользователя шлёт session-expired и
+// AuthProvider задваивает clearSession ещё до первого логина.
+const AUTH_ERROR_CODES = new Set(["TOKEN_EXPIRED", "INVALID_TOKEN"]);
 
 export function isAuthError(e: unknown): boolean {
   return e instanceof ApiError && e.status === 401 && AUTH_ERROR_CODES.has(e.code);

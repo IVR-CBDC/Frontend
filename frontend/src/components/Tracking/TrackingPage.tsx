@@ -1,28 +1,29 @@
-import { useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api } from "../../api/client";
+import { messageFor } from "../../api/errors";
 import type { Deal } from "../../types/api";
 import { StatusBadge } from "../Dashboard/StatusBadge";
 import { Timeline } from "./Timeline";
-import { useWebSocket } from "../../hooks/useWebSocket";
+import { useRefetch } from "../../hooks/useRefetch";
 
 export function TrackingPage() {
   const { dealId } = useParams<{ dealId: string }>();
   const [deal, setDeal] = useState<Deal | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  function load() {
+  const load = useCallback(() => {
     if (!dealId) return;
     api
       .getDeal(dealId)
       .then((d) => setDeal(d.deal))
-      .catch((e) => setError(e.message));
-  }
+      .catch((e) => setError(messageFor(e)));
+  }, [dealId]);
 
-  useEffect(load, [dealId]);
-  useWebSocket((event) => {
-    if (event.type === "deal.updated" && event.dealId === dealId) load();
-  });
+  // Ключевой экран трекинга — без перезапроса на connection.ack (в т.ч.
+  // после переподключения) любые изменения сделки, случившиеся во время
+  // разрыва, остались бы незамеченными: у pub/sub нет истории событий.
+  useRefetch(load, (event) => "dealId" in event && event.dealId === dealId);
 
   if (error) return <div className="field-error">{error}</div>;
   if (!deal) return <div style={{ color: "var(--text-muted)" }}>Загрузка…</div>;

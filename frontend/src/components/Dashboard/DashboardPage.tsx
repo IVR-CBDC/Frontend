@@ -1,25 +1,27 @@
-import { useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../../api/client";
+import { messageFor } from "../../api/errors";
 import type { DashboardCard } from "../../types/api";
 import { DealCard } from "./DealCard";
-import { useWebSocket } from "../../hooks/useWebSocket";
+import { useRefetch } from "../../hooks/useRefetch";
 
 export function DashboardPage() {
   const [deals, setDeals] = useState<DashboardCard[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const load = () => {
+  const load = useCallback(() => {
     api
       .getDashboard()
       .then((data) => setDeals(data.deals))
-      .catch((e) => setError(e.message));
-  };
+      .catch((e) => setError(messageFor(e)));
+  }, []);
 
-  useEffect(load, []);
-  useWebSocket((event) => {
-    if (event.type === "deal.updated") load();
-  });
+  // Без matches — дашборд не привязан к одной сделке, любой DealEvent (новая
+  // сделка, изменение существующей) для него релевантен. connection.ack
+  // (в т.ч. после переподключения) перезапрашивает список безусловно —
+  // см. useRefetch.
+  useRefetch(load);
 
   const attentionCount = deals?.filter((d) => d.needsAttention).length ?? 0;
 
