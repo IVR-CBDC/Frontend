@@ -1,0 +1,5 @@
+# Нужен, пока в devDependencies есть vitest: он тянет esbuild, чей postinstall
+# build script pnpm блокирует по умолчанию. Без этого файла `pnpm install`
+# падает с ERR_PNPM_IGNORED_BUILDS. Удалять только вместе с esbuild-зависимостью.
+allowBuilds:
+  esbuild: false

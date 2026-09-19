@@ -1,3 +1,5 @@
+import { useAuth } from "../../auth/AuthProvider";
+
 interface HeaderProps {
   unreadCount: number;
   isLive: boolean;
@@ -5,6 +7,8 @@ interface HeaderProps {
 }
 
 export function Header({ unreadCount, isLive, onOpenNotifications }: HeaderProps) {
+  const { user, company, logout } = useAuth();
+
   return (
     <header
       style={{
@@ -29,27 +33,44 @@ export function Header({ unreadCount, isLive, onOpenNotifications }: HeaderProps
         {isLive ? "Соединение активно" : "Подключение…"}
       </div>
 
-      <button
-        className="btn btn-ghost"
-        onClick={onOpenNotifications}
-        aria-label={`Уведомления, непрочитанных: ${unreadCount}`}
-      >
-        Уведомления
-        {unreadCount > 0 && (
-          <span
-            className="mono"
-            style={{
-              background: "var(--red-600)",
-              color: "white",
-              borderRadius: 10,
-              fontSize: 11,
-              padding: "1px 7px",
-            }}
-          >
-            {unreadCount}
-          </span>
+      <div style={{ display: "flex", alignItems: "center", gap: 18 }}>
+        {user && (
+          <div style={{ textAlign: "right", fontSize: 12.5, lineHeight: 1.4 }}>
+            <div style={{ fontWeight: 500 }}>{user.name || user.login}</div>
+            {company && (
+              <div className="mono" style={{ color: "var(--text-muted)", fontSize: 11.5 }}>
+                {company.name}
+              </div>
+            )}
+          </div>
         )}
-      </button>
+
+        <button
+          className="btn btn-ghost"
+          onClick={onOpenNotifications}
+          aria-label={`Уведомления, непрочитанных: ${unreadCount}`}
+        >
+          Уведомления
+          {unreadCount > 0 && (
+            <span
+              className="mono"
+              style={{
+                background: "var(--red-600)",
+                color: "white",
+                borderRadius: 10,
+                fontSize: 11,
+                padding: "1px 7px",
+              }}
+            >
+              {unreadCount}
+            </span>
+          )}
+        </button>
+
+        <button className="btn btn-secondary" onClick={() => void logout()}>
+          Выйти
+        </button>
+      </div>
     </header>
   );
 }

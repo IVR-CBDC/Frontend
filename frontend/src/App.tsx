@@ -11,8 +11,11 @@ import { NotificationsDrawer } from "./components/Notifications/NotificationsDra
 import { ToastContainer } from "./components/Notifications/ToastContainer";
 import { useToasts } from "./hooks/useToasts";
 import { useWebSocket } from "./hooks/useWebSocket";
+import { LoginPage } from "./auth/LoginPage";
+import { RegisterPage } from "./auth/RegisterPage";
+import { RequireAuth } from "./auth/RequireAuth";
 
-export default function App() {
+function AppShell() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [isLive, setIsLive] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -53,5 +56,22 @@ export default function App() {
       <NotificationsDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} refreshKey={refreshKey} />
       <ToastContainer toasts={toasts} onDismiss={dismiss} />
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <Routes>
+      <Route path="/login" element={<LoginPage />} />
+      <Route path="/register" element={<RegisterPage />} />
+      <Route
+        path="/*"
+        element={
+          <RequireAuth>
+            <AppShell />
+          </RequireAuth>
+        }
+      />
+    </Routes>
   );
 }

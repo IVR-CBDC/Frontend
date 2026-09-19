@@ -24,8 +24,10 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      "/api": { target: "http://localhost:4000", changeOrigin: true },
-      "/ws": { target: "ws://localhost:4000", ws: true },
+      // BFF на 127.0.0.1:14000 — этот порт проброшен из стенда Backend-репозитория
+      // только dev-оверлеем docker-compose.dev.yml (см. README «Контракт для SPA»).
+      "/api": { target: "http://127.0.0.1:14000", changeOrigin: true },
+      "/ws": { target: "ws://127.0.0.1:14000", ws: true },
     },
   },
 });
