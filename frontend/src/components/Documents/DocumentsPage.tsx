@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { api } from "../../api/client";
-import type { Deal, DocumentStatus } from "../../types/deal";
+import type { Deal, DocumentStatus } from "../../types/api";
 
 const statusLabel: Record<DocumentStatus, string> = {
   missing: "Не загружен",

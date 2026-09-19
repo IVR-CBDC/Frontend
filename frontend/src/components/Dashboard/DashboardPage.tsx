@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../../api/client";
-import type { DashboardCard } from "../../types/deal";
+import type { DashboardCard } from "../../types/api";
 import { DealCard } from "./DealCard";
 import { useWebSocket } from "../../hooks/useWebSocket";
 

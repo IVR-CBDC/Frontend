@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api } from "../../api/client";
-import type { Deal } from "../../types/deal";
+import type { Deal } from "../../types/api";
 import { StatusBadge } from "../Dashboard/StatusBadge";
 import { Timeline } from "./Timeline";
 import { useWebSocket } from "../../hooks/useWebSocket";

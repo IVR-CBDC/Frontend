@@ -1,4 +1,4 @@
-import type { DealStage } from "../../types/deal";
+import type { DealStage } from "../../types/api";
 
 const stageLabel: Record<DealStage, string> = {
   created: "Создана",

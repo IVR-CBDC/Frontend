@@ -1,4 +1,4 @@
-import type { TimelineEvent } from "../../types/deal";
+import type { TimelineEvent } from "../../types/api";
 
 const statusColor: Record<TimelineEvent["status"], string> = {
   done: "var(--green-600)",
@@ -18,7 +18,7 @@ export function Timeline({ events }: { events: TimelineEvent[] }) {
   return (
     <ol style={{ listStyle: "none", padding: 0, margin: 0 }}>
       {events.map((event, i) => (
-        <li key={event.id} style={{ display: "flex", gap: 14, paddingBottom: i === events.length - 1 ? 0 : 22, position: "relative" }}>
+        <li key={event.seq} style={{ display: "flex", gap: 14, paddingBottom: i === events.length - 1 ? 0 : 22, position: "relative" }}>
           <div style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
             <span
               style={{
@@ -47,7 +47,11 @@ export function Timeline({ events }: { events: TimelineEvent[] }) {
             </div>
             <div style={{ fontSize: 12.5, color: "var(--text-muted)", marginTop: 2 }}>
               {event.actor}
-              {event.timestamp && " · " + new Date(event.timestamp).toLocaleString("ru-RU")}
+              {/* core отдаёт startedAt/finishedAt отдельно вместо одной timestamp —
+                  для таймлайна показываем то, что уже есть: начало шага, а если
+                  он завершён — момент завершения. */}
+              {event.finishedAt && " · " + new Date(event.finishedAt).toLocaleString("ru-RU")}
+              {!event.finishedAt && event.startedAt && " · " + new Date(event.startedAt).toLocaleString("ru-RU")}
             </div>
             {event.status === "delayed" && event.delayReason && (
               <div style={{ fontSize: 12.5, color: "var(--red-600)", marginTop: 4 }}>

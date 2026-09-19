@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import type { DashboardCard } from "../../types/deal";
+import type { DashboardCard } from "../../types/api";
 import { ProgressBar } from "./ProgressBar";
 import { StatusBadge } from "./StatusBadge";
 

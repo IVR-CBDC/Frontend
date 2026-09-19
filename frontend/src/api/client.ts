@@ -4,9 +4,9 @@ import type {
   DashboardCard,
   DocumentStatus,
   NotificationItem,
-  ScenarioOption,
+  ScenarioCard,
   SettlementScenario,
-} from "../types/deal";
+} from "../types/api";
 import { ApiError, isAuthError } from "./errors";
 
 const BASE = "/api";
@@ -110,7 +110,7 @@ export const api = {
 
   getDeal: (id: string) => request<{ deal: Deal }>(`/deals/${id}`),
 
-  getScenarios: () => request<{ scenarios: ScenarioOption[] }>("/scenarios"),
+  getScenarios: () => request<{ scenarios: ScenarioCard[] }>("/scenarios"),
 
   chooseScenario: (dealId: string, scenario: SettlementScenario) =>
     request<{ deal: Deal }>(`/deals/${dealId}/scenario`, {

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../../api/client";
-import type { NotificationItem } from "../../types/deal";
+import type { NotificationItem } from "../../types/api";
 
 const severityColor: Record<NotificationItem["severity"], string> = {
   info: "var(--cyan-600)",

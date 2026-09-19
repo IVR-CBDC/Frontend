@@ -1,12 +1,23 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api } from "../../api/client";
-import type { ScenarioOption, SettlementScenario } from "../../types/deal";
+import type { ScenarioCard, SettlementScenario } from "../../types/api";
+
+// Мех��ническое обновление под новый контракт (ScenarioCard вместо старого
+// мок-типа ScenarioOption): costLabel в контракте нет, вместо неё —
+// commission (котировка service-commission) и available/unavailableReason.
+// Полноценный редизайн карточек — задача Task 3/4, здесь только то, что
+// нужно, чтобы дерево типов оставалось зелёным.
+function costLabel(option: ScenarioCard): string {
+  if (!option.available) return option.unavailableReason ?? "Недоступно";
+  if (!option.commission) return "Уточняется";
+  return `${new Intl.NumberFormat("ru-RU").format(option.commission.total)}`;
+}
 
 export function ScenarioPage() {
   const { dealId } = useParams<{ dealId: string }>();
   const navigate = useNavigate();
-  const [scenarios, setScenarios] = useState<ScenarioOption[] | null>(null);
+  const [scenarios, setScenarios] = useState<ScenarioCard[] | null>(null);
   const [selected, setSelected] = useState<SettlementScenario | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -61,7 +72,7 @@ export function ScenarioPage() {
 
               <div style={{ display: "flex", gap: 16, marginBottom: 10 }}>
                 <StatBlock label="Срок" value={option.etaLabel} />
-                <StatBlock label="Стоимость" value={option.costLabel} />
+                <StatBlock label="Стоимость" value={costLabel(option)} />
               </div>
 
               <ul style={{ margin: 0, paddingLeft: 16, fontSize: 12.5, color: "var(--text-muted)" }}>
