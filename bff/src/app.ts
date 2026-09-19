@@ -8,6 +8,7 @@ import { authRouter } from "./routes/auth.js";
 import { dealsRouter } from "./routes/deals.js";
 import { notificationsRouter } from "./routes/notifications.js";
 import { resolveRequestId, runWithRequestId } from "./requestContext.js";
+import { getReadiness } from "./health.js";
 
 // Сборка express-приложения вынесена отдельно от index.ts, чтобы тесты могли
 // поднимать приложение без сокета и открытого порта (см. tests/*.test.ts).
@@ -42,7 +43,29 @@ export function createApp(config: Config): express.Express {
     runWithRequestId(requestId, next);
   });
 
-  app.get("/health", (_req, res) => res.json({ status: "ok" }));
+  // F10 (final review): раньше /health отвечал {status:"ok"} безусловно и
+  // считался и живостью, и (в docker-compose healthcheck) готовностью —
+  // честно только на словах, спека §9 прямо требует, чтобы bff проверял
+  // Redis. Теперь /health — только живость процесса: без сети, без await,
+  // не может зависнуть или зафлапать здоровье контейнера из-за медленного
+  // апстрима. Форма ответа ({ok, ...}) — как у остальных сервисов стенда
+  // (auth/core), которые тоже грепает их compose-healthcheck.
+  app.get("/health", (_req, res) => res.json({ ok: true }));
+
+  // /ready — настоящая готовность: Redis-подписка В МОМЕНТЕ (см.
+  // isRedisSubscriberReady, F10) плюс достижимость auth/core/commission,
+  // с коротким TTL-кешем (health.ts) — это то, что должен проверять
+  // healthcheck compose/readinessProbe k3s (план 08), не /health.
+  app.get("/ready", async (req, res, next) => {
+    try {
+      const config = req.app.get("config") as Config;
+      const body = await getReadiness(config);
+      res.status(body.ok ? 200 : 503).json(body);
+    } catch (err) {
+      next(err);
+    }
+  });
+
   app.use("/api", authRouter);
   app.use("/api", dealsRouter);
   app.use("/api", notificationsRouter);
