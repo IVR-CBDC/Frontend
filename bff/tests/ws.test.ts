@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createServer } from "node:http";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -7,8 +7,10 @@ import { WebSocket } from "ws";
 import {
   initWebSocketHub,
   closeWebSocketHub,
+  isRedisSubscriberReady,
   MAX_SEEN_SEQ,
   _debugSeenSeqSizes,
+  _resetWarnMissingAtForTests,
   type RedisSubscriberLike,
   type VerifyTokenResult,
 } from "../src/ws/hub.js";
@@ -64,13 +66,14 @@ let fakeRedis: FakeRedisSubscriber;
 let port: number;
 const openSockets: WebSocket[] = [];
 
-async function startHub(): Promise<void> {
+async function startHub(deadCheckIntervalMs?: number): Promise<void> {
   server = createServer();
   fakeRedis = new FakeRedisSubscriber();
   await initWebSocketHub(server, {
     redis: fakeRedis,
     verifyToken: fakeVerifyToken,
     allowedOrigins: [ALLOWED_ORIGIN],
+    deadCheckIntervalMs,
   });
   await new Promise<void>((resolve) => server.listen(0, resolve));
   port = (server.address() as AddressInfo).port;
@@ -303,5 +306,110 @@ describe("initWebSocketHub", () => {
     // должен наткнуться на чужой wss/redisSubscriber.
     await closeWebSocketHub();
     await new Promise<void>((resolve) => hangingServer.close(() => resolve()));
+  });
+
+  // F6 (final review): "мёртвый" сокет — клиент, который принял апгрейд, но
+  // не отвечает на ping протокольным pong'ом (autoPong: false выключает
+  // автоответ ws-клиента, имитируя реальный обрыв без TCP FIN — закрытая
+  // крышка, NAT, выселение пода). Раньше такой сокет не давал события
+  // "close" никогда, и его запись в clientsByCompany/heartbeat-таймер
+  // тикали бы вечно.
+  it("сокет, не отвечающий pong'ом на ping, обрывается сервером (terminate) на втором тике", async () => {
+    await startHub(30); // короткий deadCheckIntervalMs — тест не ждёт боевые 30с
+    const socket = new WebSocket(`ws://127.0.0.1:${port}/ws`, {
+      headers: { Cookie: "session=token-company-a", Origin: ALLOWED_ORIGIN },
+      autoPong: false,
+    });
+    openSockets.push(socket);
+    await waitForOpen(socket);
+    // Даём хабу время аутентифицировать сокет (deps.verifyToken — асинхронный).
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const closeInfo = await waitForClose(socket);
+    // ws.terminate() рвёт TCP-соединение без штатного close-фрейма —
+    // клиентская сторона в этом случае видит code 1006 (abnormal closure).
+    expect(closeInfo.code).toBe(1006);
+  });
+
+  it("сокет, отвечающий pong'ом на каждый ping, не обрывается", async () => {
+    await startHub(30);
+    const socket = connect("session=token-company-a"); // autoPong: true по умолчанию
+    await waitForOpen(socket);
+    let closed = false;
+    socket.once("close", () => {
+      closed = true;
+    });
+
+    // Переживаем несколько тиков dead-check интервала.
+    await new Promise((resolve) => setTimeout(resolve, 130));
+    expect(closed).toBe(false);
+  });
+
+  // F12 (final review): initWebSocketHub раньше не подчищал предыдущее
+  // состояние хаба, если его вызвать повторно без closeWebSocketHub между
+  // вызовами — "pmessage"-листенер копился бы на новом redisSubscriber. Сам
+  // факт, что второй вызов подряд не бросает и хаб продолжает нормально
+  // работать (доставляет события ровно один раз на сокет), доказывает, что
+  // защита сработала, а не просто не упала.
+  it("повторный initWebSocketHub без закрытия предыдущего не копит листенеры/состояние", async () => {
+    await startHub();
+    await initWebSocketHub(server, {
+      redis: fakeRedis,
+      verifyToken: fakeVerifyToken,
+      allowedOrigins: [ALLOWED_ORIGIN],
+    });
+
+    const socket = connect("session=token-company-a");
+    await waitForOpen(socket);
+    const collector = collectDealEvents(socket);
+
+    publish("deal-events:company-a", { type: "deal.created", seq: 1, deal_id: "d1", at: "2026-01-01T00:00:00Z" });
+    await collector.wait(1);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    // Если бы старый listener не был снят, событие пришло бы дважды.
+    expect(collector.events).toHaveLength(1);
+  });
+});
+
+describe("isRedisSubscriberReady (F10, final review)", () => {
+  it("до старта хаба — не готов", async () => {
+    await closeWebSocketHub(); // на случай, если предыдущий тест не закрылся
+    expect(isRedisSubscriberReady()).toBe(false);
+  });
+
+  it("после успешного старта — готов (фейк без .status считается всегда готовым)", async () => {
+    await startHub();
+    expect(isRedisSubscriberReady()).toBe(true);
+  });
+
+  it("после closeWebSocketHub — снова не готов", async () => {
+    await startHub();
+    await closeWebSocketHub();
+    expect(isRedisSubscriberReady()).toBe(false);
+  });
+});
+
+describe("warnMissingAt throttling (F12, final review)", () => {
+  afterEach(() => {
+    _resetWarnMissingAtForTests();
+  });
+
+  it("предупреждение о событии без at пишется в лог только один раз, даже на несколько таких событий", async () => {
+    await startHub();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const socket = connect("session=token-company-a");
+    await waitForOpen(socket);
+    const collector = collectDealEvents(socket);
+
+    publish("deal-events:company-a", { type: "deal.updated", seq: 1, deal_id: "d1" }); // без at
+    publish("deal-events:company-a", { type: "deal.updated", seq: 2, deal_id: "d1" }); // без at
+    await collector.wait(2);
+
+    const missingAtWarnings = warnSpy.mock.calls.filter(([msg]) =>
+      String(msg).includes("событие от core без поля at"),
+    );
+    expect(missingAtWarnings).toHaveLength(1);
+    warnSpy.mockRestore();
   });
 });

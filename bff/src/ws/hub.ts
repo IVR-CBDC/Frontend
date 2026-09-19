@@ -3,9 +3,27 @@ import { WebSocketServer, WebSocket } from "ws";
 import { importJWK, importSPKI, jwtVerify, type JWK } from "jose";
 import type { Config } from "../config.js";
 import { COOKIE_NAME } from "../session.js";
+// F8 (final review): тип кадра события — часть контракта BFF↔SPA, теперь
+// живёт в types.ts вместе с остальными типами этого контракта, а не только
+// здесь. Ре-экспортируем ниже, чтобы не ломать то, что уже импортирует их
+// отсюда (см. tests/ws.test.ts).
+import type { DealEvent, DealEventType } from "../types.js";
+
+export type { DealEvent, DealEventType };
 
 const HEARTBEAT_INTERVAL_MS = 25_000;
 const CHANNEL_PREFIX = "deal-events:";
+
+// F6 (final review): протокольные ping/pong (в отличие от JSON-heartbeat
+// выше, который сервер только отправляет) — стандартный для `ws` приём
+// обнаружения мёртвых сокетов. Клиент, исчезнувший без TCP FIN (закрыли
+// крышку, NAT, выселение пода), никогда не даст событие "close": без этого
+// его запись в clientsByCompany и таймер heartbeat тикали бы вечно. Интервал
+// должен быть заметно больше времени, за которое реальный клиент успевает
+// ответить pong (сетевой RTT), но не настолько большим, чтобы утечка жила
+// долго — 30с (чуть больше HEARTBEAT_INTERVAL_MS) даёт клиенту минимум один
+// полный цикл на ответ, прежде чем его сочтут мёртвым на СЛЕДУЮЩЕМ тике.
+export const DEAD_CHECK_INTERVAL_MS = 30_000;
 
 // Дедупликация по seq — на "виденный набор", а не на "выше последнего":
 // спека §4.4 говорит, что core присваивает seq при INSERT в outbox-таблицу,
@@ -41,16 +59,6 @@ const REDIS_CONNECT_TIMEOUT_MS = 3_000;
 const REDIS_STARTUP_MAX_ATTEMPTS = 5;
 const REDIS_MAX_RETRIES_PER_REQUEST = 3;
 
-export type DealEventType = "deal.updated" | "deal.created" | "notification.created";
-
-export interface DealEvent {
-  type: DealEventType;
-  seq: number;
-  dealId?: string;
-  notificationId?: string;
-  at: string;
-}
-
 // Минимальный интерфейс Redis-подписчика, который нужен хабу. В проде это
 // ioredis; в тестах — фейк, публикующий "pmessage" вручную без реального
 // Redis (описано в бифе задачи 4).
@@ -58,6 +66,13 @@ export interface RedisSubscriberLike {
   psubscribe(pattern: string): unknown;
   on(event: "pmessage", listener: (pattern: string, channel: string, message: string) => void): unknown;
   quit(): unknown;
+  // F10 (final review): необязательное поле — ioredis отдаёт живой статус
+  // соединения через геттер .status ("ready" только когда подписка реально
+  // активна прямо сейчас, а не "когда-то была подтверждена"; после обрыва
+  // клиент уходит в "reconnecting", и /ready должен это увидеть). Фейки в
+  // тестах его не реализуют — считаем такой подписчик всегда готовым же,
+  // т.к. это не предмет их тестов (см. isRedisSubscriberReady ниже).
+  readonly status?: string;
 }
 
 export interface VerifyTokenResult {
@@ -77,15 +92,23 @@ export interface WsHubDeps {
   // Переопределяется только в тестах, чтобы не ждать DEFAULT_SUBSCRIBE_TIMEOUT_MS
   // по-настоящему — в проде всегда берётся значение по умолчанию.
   subscribeTimeoutMs?: number;
+  // Аналогично — переопределяется только в тестах (F6), чтобы не ждать
+  // боевые DEAD_CHECK_INTERVAL_MS.
+  deadCheckIntervalMs?: number;
 }
 
 interface ClientState {
   companyId: string;
   seenSeq: Set<number>;
+  // F6 (final review): true — клиент ответил на последний ping (или ещё не
+  // проверялся ни разу); interval выставляет false перед каждым новым ping
+  // и terminate()-ит сокет, если застаёт его всё ещё false на следующем тике.
+  isAlive: boolean;
 }
 
 let wss: WebSocketServer | null = null;
 let redisSubscriber: RedisSubscriberLike | null = null;
+let deadCheckInterval: ReturnType<typeof setInterval> | null = null;
 
 const clientsByCompany = new Map<string, Set<WebSocket>>();
 const stateByClient = new WeakMap<WebSocket, ClientState>();
@@ -168,9 +191,26 @@ function parseDealEvent(message: string): DealEvent | null {
   };
 }
 
+// F12 (final review): раньше писал в лог на каждое такое событие — если
+// core систематически не присылает at, это заливает лог одним и тем же
+// предупреждением бесконечно. Предупреждаем один раз за жизнь процесса:
+// этого достаточно, чтобы заметить симптом, не заливая лог.
+let warnedMissingAt = false;
+
 function warnMissingAt(): string {
-  console.warn("ws/hub: событие от core без поля at, подставлено время получения BFF");
+  if (!warnedMissingAt) {
+    warnedMissingAt = true;
+    console.warn(
+      "ws/hub: событие от core без поля at, подставлено время получения BFF " +
+        "(повторные предупреждения об этом подавлены до перезапуска процесса)",
+    );
+  }
   return new Date().toISOString();
+}
+
+// Только для тестов — иначе тесты в одном файле зависят от порядка запуска.
+export function _resetWarnMissingAtForTests(): void {
+  warnedMissingAt = false;
 }
 
 // Оборачивает промис таймаутом: если он не устаканится (не resolve, не reject)
@@ -229,6 +269,15 @@ function handlePMessage(_pattern: string, channel: string, message: string): voi
 // зарезервирован под собственные коды приложения, отправить его можно только
 // после успешного handshake, поэтому не раньше события "connection").
 export async function initWebSocketHub(server: HttpServer, deps: WsHubDeps): Promise<void> {
+  // F12 (final review): раньше повторный вызов (без closeWebSocketHub
+  // между ними) тихо навешивал второй "pmessage"-листенер на нового
+  // redisSubscriber и терял старый wss/interval — в проде вызывается один
+  // раз, но это грабли для тестов и для любого будущего кода перезапуска.
+  // Подчищаем предыдущее состояние хаба перед тем, как поднимать новое.
+  if (wss || redisSubscriber) {
+    await closeWebSocketHub();
+  }
+
   wss = new WebSocketServer({ server, path: "/ws" });
   redisSubscriber = deps.redis;
 
@@ -259,10 +308,19 @@ export async function initWebSocketHub(server: HttpServer, deps: WsHubDeps): Pro
       .then(({ companyId }) => {
         if (socket.readyState !== WebSocket.OPEN) return; // клиент отключился, пока ждали проверку токена
 
-        stateByClient.set(socket, { companyId, seenSeq: new Set() });
+        stateByClient.set(socket, { companyId, seenSeq: new Set(), isAlive: true });
         addClient(companyId, socket);
 
         socket.send(JSON.stringify({ type: "connection.ack" }));
+
+        // F6 (final review): протокольный pong — ws-клиент отвечает на
+        // ping автоматически на транспортном уровне без участия
+        // прикладного кода клиента, поэтому это работает даже для клиентов,
+        // которые никогда не смотрят на кадры heartbeat/connection.ack.
+        socket.on("pong", () => {
+          const state = stateByClient.get(socket);
+          if (state) state.isAlive = true;
+        });
 
         const heartbeat = setInterval(() => {
           if (socket.readyState === WebSocket.OPEN) {
@@ -281,6 +339,27 @@ export async function initWebSocketHub(server: HttpServer, deps: WsHubDeps): Pro
         socket.close(4401, "Недействительный токен");
       });
   });
+
+  // F6 (final review): единственный серверный interval на весь хаб (не по
+  // одному на сокет) — ping()-ует всех аутентифицированных клиентов и
+  // terminate()-ит тех, кто не ответил pong'ом с прошлого тика. Сокеты, ещё
+  // не прошедшие verifyToken (stateByClient пуст), не пингуем — у них нет
+  // isAlive, и если клиент завис на этом этапе, соединение и так ничего не
+  // держит подписанным в clientsByCompany.
+  const deadCheckIntervalMs = deps.deadCheckIntervalMs ?? DEAD_CHECK_INTERVAL_MS;
+  deadCheckInterval = setInterval(() => {
+    if (!wss) return;
+    for (const socket of wss.clients) {
+      const state = stateByClient.get(socket);
+      if (!state) continue;
+      if (!state.isAlive) {
+        socket.terminate();
+        continue;
+      }
+      state.isAlive = false;
+      socket.ping();
+    }
+  }, deadCheckIntervalMs);
 
   // Ждём подтверждения подписки от Redis, а не только факта вызова
   // psubscribe(): ioredis буферизует команды, пока соединение устанавливается,
@@ -323,6 +402,11 @@ export async function initWebSocketHub(server: HttpServer, deps: WsHubDeps): Pro
 // index.ts, чтобы процесс не завершался, бросив клиентов и соединение с
 // Redis висеть.
 export async function closeWebSocketHub(): Promise<void> {
+  if (deadCheckInterval) {
+    clearInterval(deadCheckInterval);
+    deadCheckInterval = null;
+  }
+
   if (redisSubscriber) {
     try {
       await Promise.resolve(redisSubscriber.quit());
@@ -347,6 +431,20 @@ export async function closeWebSocketHub(): Promise<void> {
   }
 
   clientsByCompany.clear();
+}
+
+// F10 (final review): "готовность" для /ready — состояние Redis-подписчика
+// В МОМЕНТЕ запроса, а не факт, что initWebSocketHub() когда-то дождался
+// подтверждённой подписки при старте. После обрыва соединения ioredis по
+// умолчанию уходит в бесконечные переподключения (см. createProductionWsHubDeps)
+// молча, не роняя процесс — без этой проверки /ready продолжал бы отвечать
+// "готов", пока BFF на самом деле не доставляет ни одного события. "ready" —
+// единственный статус ioredis, означающий "подписка сейчас реально активна";
+// подписчик без .status (фейки в тестах хаба) считается готовым — это не то,
+// что проверяют те тесты.
+export function isRedisSubscriberReady(): boolean {
+  if (!redisSubscriber) return false;
+  return redisSubscriber.status === undefined || redisSubscriber.status === "ready";
 }
 
 // Только для тестов: снимок размеров множеств увиденных seq у сокетов

@@ -118,3 +118,39 @@ export interface CreateDealInput {
   amount: number;
   currency: string;
 }
+
+// ---- Контракт WS (ws/hub.ts -> SPA) ---------------------------------------
+// F8 (final review): раньше эти типы жили только в ws/hub.ts и не были
+// частью общего контракта BFF↔SPA (types.ts) — единственного места, где
+// фронт мог бы их найти без чтения исходников BFF. См. README
+// ("Контракт для SPA") для смысла connection.ack/heartbeat, кодов закрытия
+// и правила "на каждый connection.ack — перезапроси текущий экран".
+
+export type DealEventType = "deal.updated" | "deal.created" | "notification.created";
+
+// Событие сделки/уведомления, полученное через WS. Триггер "что-то
+// изменилось" — не носитель данных: экран перезапрашивается заново
+// (см. README), а не собирается из полей этого события.
+export interface DealEvent {
+  type: DealEventType;
+  seq: number;
+  dealId?: string;
+  notificationId?: string;
+  at: string;
+}
+
+// Первый кадр после успешной аутентификации сокета — сигнал "соединение
+// (пере)установлено, актуальность экрана под вопросом, перезапроси его".
+export interface ConnectionAckFrame {
+  type: "connection.ack";
+}
+
+// Прикладной heartbeat поверх JSON (не путать с протокольным ws
+// ping/pong — см. ws/hub.ts, F6 final review): подтверждает, что канал
+// жив, для клиентов, которые не следят за протокольными пинг-кадрами.
+export interface HeartbeatFrame {
+  type: "heartbeat";
+  at: string;
+}
+
+export type WsServerFrame = DealEvent | ConnectionAckFrame | HeartbeatFrame;
