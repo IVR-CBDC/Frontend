@@ -24,6 +24,23 @@ const CHANNEL_PREFIX = "deal-events:";
 // элемент — самый старый).
 export const MAX_SEEN_SEQ = 500;
 
+// Сколько ждём подтверждённой Redis-подписки при старте, прежде чем сдаться:
+// достаточно долго для локали/compose (Redis уже поднят по healthcheck в
+// depends_on), но ограничено, чтобы недоступный Redis приводил к быстрому и
+// громкому отказу процесса, а не к бесконечному "зависанию" без HTTP-порта и
+// без диагностики (см. отчёт задачи 4, round 2).
+export const DEFAULT_SUBSCRIBE_TIMEOUT_MS = 5_000;
+
+// Параметры боевого ioredis-клиента (createProductionWsHubDeps):
+// connectTimeout — сколько ждём TCP-соединение с Redis на каждую попытку;
+// REDIS_STARTUP_MAX_ATTEMPTS — сколько попыток переподключения делаем, пока
+// не было ни одного успешного подключения, прежде чем retryStrategy
+// сдаётся (см. комментарий у createProductionWsHubDeps);
+// DEFAULT_SUBSCRIBE_TIMEOUT_MS выше — итоговая страховка поверх этого всего.
+const REDIS_CONNECT_TIMEOUT_MS = 3_000;
+const REDIS_STARTUP_MAX_ATTEMPTS = 5;
+const REDIS_MAX_RETRIES_PER_REQUEST = 3;
+
 export type DealEventType = "deal.updated" | "deal.created" | "notification.created";
 
 export interface DealEvent {
@@ -50,6 +67,9 @@ export interface VerifyTokenResult {
 export interface WsHubDeps {
   redis: RedisSubscriberLike;
   verifyToken: (token: string) => Promise<VerifyTokenResult>;
+  // Переопределяется только в тестах, чтобы не ждать DEFAULT_SUBSCRIBE_TIMEOUT_MS
+  // по-настоящему — в проде всегда берётся значение по умолчанию.
+  subscribeTimeoutMs?: number;
 }
 
 interface ClientState {
@@ -146,6 +166,27 @@ function warnMissingAt(): string {
   return new Date().toISOString();
 }
 
+// Оборачивает промис таймаутом: если он не устаканится (не resolve, не reject)
+// за ms миллисекунд — отклоняем с понятным сообщением. Нужен как страховка
+// поверх ioredis-таймаутов/retryStrategy: даже если клиент сконфигурирован
+// неверно и завис бы на самой команде, initWebSocketHub всё равно не
+// зависнет молча навсегда.
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err: unknown) => {
+        clearTimeout(timer);
+        reject(err instanceof Error ? err : new Error(String(err)));
+      },
+    );
+  });
+}
+
 function companyIdFromChannel(channel: string): string | null {
   if (!channel.startsWith(CHANNEL_PREFIX)) return null;
   const companyId = channel.slice(CHANNEL_PREFIX.length);
@@ -228,7 +269,34 @@ export async function initWebSocketHub(server: HttpServer, deps: WsHubDeps): Pro
   // (index.ts) только после подтверждения — иначе есть окно между стартом
   // HTTP-сервера и реальной подпиской, в которое опубликованные события
   // были бы потеряны.
-  await redisSubscriber.psubscribe(`${CHANNEL_PREFIX}*`);
+  //
+  // Но ждём не бесконечно: если Redis недоступен, ioredis по умолчанию будет
+  // копить psubscribe() в offline-очереди и переподключаться вечно — сам
+  // промис никогда не разрешится и не отклонится, а процесс зависнет без
+  // открытого HTTP-порта и без единой строчки в логе (round 2 отчёта задачи
+  // 4). withTimeout — итоговая страховка сверху retryStrategy/connectTimeout
+  // клиента (createProductionWsHubDeps): даже если они настроены неверно,
+  // initWebSocketHub всё равно завершится отказом за конечное время.
+  const timeoutMs = deps.subscribeTimeoutMs ?? DEFAULT_SUBSCRIBE_TIMEOUT_MS;
+  try {
+    await withTimeout(
+      Promise.resolve(redisSubscriber.psubscribe(`${CHANNEL_PREFIX}*`)),
+      timeoutMs,
+      `Не удалось подтвердить подписку на Redis-канал ${CHANNEL_PREFIX}* за ${timeoutMs} мс`,
+    );
+  } catch (err) {
+    // Не оставляем половинчато поднятый хаб: закрываем то, что успели создать
+    // (wss и, если получится, redisSubscriber), чтобы вызывающий код (index.ts)
+    // мог упасть с чистым состоянием, а не с повисшим сервером и подпиской.
+    // Ошибку самой очистки проглатываем — исходная причина отказа (таймаут/
+    // недоступный Redis) важнее и не должна быть замаскирована.
+    try {
+      await closeWebSocketHub();
+    } catch {
+      // см. комментарий выше
+    }
+    throw err;
+  }
 }
 
 // Закрывает Redis-подписку и все открытые сокеты — вызывается из SIGTERM в
@@ -236,7 +304,14 @@ export async function initWebSocketHub(server: HttpServer, deps: WsHubDeps): Pro
 // Redis висеть.
 export async function closeWebSocketHub(): Promise<void> {
   if (redisSubscriber) {
-    await Promise.resolve(redisSubscriber.quit());
+    try {
+      await Promise.resolve(redisSubscriber.quit());
+    } catch {
+      // Соединение уже могло быть разорвано (например, initWebSocketHub
+      // зовёт closeWebSocketHub() после неудачной/просроченной подписки) —
+      // quit() на уже мёртвом клиенте может отклониться, это не повод ронять
+      // само закрытие хаба.
+    }
     redisSubscriber = null;
   }
 
@@ -284,9 +359,41 @@ export async function createProductionWsHubDeps(config: Config): Promise<WsHubDe
   };
 
   const { default: Redis } = await import("ioredis");
-  const redis: RedisSubscriberLike = new Redis(config.redisUrl);
 
-  return { redis, verifyToken };
+  // По умолчанию ioredis переподключается бесконечно и копит команды в
+  // offline-очереди, пока не подключится — удобно во время работы (обрыв
+  // соединения не должен убивать уже стартовавший процесс), но опасно на
+  // старте: initWebSocketHub() теперь дожидается подтверждённой подписки
+  // (round 1 задачи 4), и недоступный Redis без этих ограничений превратил
+  // бы await psubscribe() в вечное зависание без единой строчки в логе.
+  //
+  // connectedOnce переключает поведение retryStrategy: пока не было ни
+  // одного успешного подключения — ретраи ограничены (даём Redis шанс
+  // подняться, но не вечно, чтобы initWebSocketHub() отказал быстро и
+  // громко). После первого успешного подключения — то же самое соединение
+  // обязано переподключаться неограниченно при обрыве: рантайм-устойчивость
+  // и строгость старта — разные задачи, и уже работающий сервис не должен
+  // падать из-за временного сетевого сбоя.
+  let connectedOnce = false;
+  const redis = new Redis(config.redisUrl, {
+    connectTimeout: REDIS_CONNECT_TIMEOUT_MS,
+    maxRetriesPerRequest: REDIS_MAX_RETRIES_PER_REQUEST,
+    retryStrategy(times) {
+      if (!connectedOnce && times > REDIS_STARTUP_MAX_ATTEMPTS) {
+        // null останавливает переподключение — offline-очередь (включая
+        // наш psubscribe) тут же отклоняется с ошибкой вместо вечного
+        // ожидания.
+        return null;
+      }
+      return Math.min(times * 50, 2000);
+    },
+  });
+  redis.once("ready", () => {
+    connectedOnce = true;
+  });
+
+  const redisLike: RedisSubscriberLike = redis;
+  return { redis: redisLike, verifyToken };
 }
 
 // Эндпоинт называется .well-known/jwks.json, но исторически (и осознанно —

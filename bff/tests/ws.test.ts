@@ -25,6 +25,22 @@ class FakeRedisSubscriber extends EventEmitter implements RedisSubscriberLike {
   }
 }
 
+// Фейк, который никогда не подтверждает подписку — имитирует недоступный
+// Redis без ограничений на клиенте (offline-очередь копится вечно): нужен,
+// чтобы доказать, что initWebSocketHub() сама себя не подвешивает навсегда,
+// а отклоняется по таймауту (round 2 отчёта задачи 4).
+class HangingRedisSubscriber extends EventEmitter implements RedisSubscriberLike {
+  psubscribe(): unknown {
+    return new Promise(() => {
+      // намеренно никогда не resolve/reject — как offline-очередь ioredis
+      // без maxRetriesPerRequest/retryStrategy-ограничения.
+    });
+  }
+  quit(): unknown {
+    return Promise.resolve("OK");
+  }
+}
+
 // Токены — просто метки на фейковый company_id, реальный JWT/jose здесь не
 // нужен: проверка подписи/claims — забота createProductionWsHubDeps,
 // покрытая живой проверкой в отчёте, а не этим тестом.
@@ -223,5 +239,28 @@ describe("initWebSocketHub", () => {
 
     const sizes = _debugSeenSeqSizes("company-a");
     expect(sizes).toEqual([MAX_SEEN_SEQ]);
+  });
+
+  it("отклоняется по таймауту, если Redis никогда не подтверждает подписку, а не зависает навсегда", async () => {
+    const hangingServer = createServer();
+    const hangingRedis = new HangingRedisSubscriber();
+
+    const start = Date.now();
+    await expect(
+      initWebSocketHub(hangingServer, {
+        redis: hangingRedis,
+        verifyToken: fakeVerifyToken,
+        // Короткий таймаут — тест не должен реально ждать боевые 5 секунд
+        // (DEFAULT_SUBSCRIBE_TIMEOUT_MS), только доказать сам механизм.
+        subscribeTimeoutMs: 50,
+      }),
+    ).rejects.toThrow(/подтвердить подписку/);
+    expect(Date.now() - start).toBeLessThan(1000);
+
+    // closeWebSocketHub() внутри initWebSocketHub уже должен был откатить
+    // частично поднятое состояние — следующий startHub() в другом тесте не
+    // должен наткнуться на чужой wss/redisSubscriber.
+    await closeWebSocketHub();
+    await new Promise<void>((resolve) => hangingServer.close(() => resolve()));
   });
 });

@@ -12,8 +12,21 @@ const server = createServer(createApp(config));
 // поэтому ждём её здесь же, до server.listen(): так HTTP-порт открывается
 // только когда подписка на deal-events:* уже реально подтверждена сервером
 // Redis, и окна, в которое опубликованные события терялись бы, нет.
+//
+// Оба шага ограничены по времени (см. hub.ts: connectTimeout/retryStrategy
+// боевого Redis-клиента и DEFAULT_SUBSCRIBE_TIMEOUT_MS в initWebSocketHub),
+// поэтому недоступный auth или Redis не подвешивает процесс без диагностики —
+// он падает здесь с понятным сообщением, а не зависает молча.
 const wsHubDeps = await createProductionWsHubDeps(config);
-await initWebSocketHub(server, wsHubDeps);
+try {
+  await initWebSocketHub(server, wsHubDeps);
+} catch (err) {
+  console.error(
+    `Не удалось подписаться на Redis (REDIS_URL=${config.redisUrl}) — BFF не может доставлять живые события сделок и не запустится.`,
+    err,
+  );
+  process.exit(1);
+}
 
 server.listen(config.port, () => {
   console.log(`Alfa CBDC Hub BFF listening on http://localhost:${config.port}`);
