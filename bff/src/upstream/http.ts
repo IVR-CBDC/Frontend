@@ -1,4 +1,5 @@
 import { ApiError, upstreamUnavailable } from "../errors.js";
+import { getRequestId } from "../requestContext.js";
 
 interface UpstreamErrorBody {
   code?: unknown;
@@ -12,9 +13,20 @@ export async function callUpstream<T>(url: string, init: RequestInit, timeoutMs:
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
+  // F7 (final review): единственное место, которое реально отправляет
+  // запрос апстримам — поэтому единственное место, где нужно добавить
+  // x-request-id, а не в каждой вызывающей функции upstream/*.ts. Headers
+  // здесь у нас везде простой объект (см. call sites в upstream/*.ts), не
+  // instance Headers/массив пар — этого достаточно для fetch().
+  const headers: Record<string, string> = { ...(init.headers as Record<string, string> | undefined) };
+  const requestId = getRequestId();
+  if (requestId) {
+    headers["X-Request-Id"] = requestId;
+  }
+
   let response: Response;
   try {
-    response = await fetch(url, { ...init, signal: controller.signal });
+    response = await fetch(url, { ...init, headers, signal: controller.signal });
   } catch {
     // Abort по таймауту или сетевая ошибка (сервис не поднят/недоступен) —
     // для фронта оба случая неотличимы от "сервис недоступен".
