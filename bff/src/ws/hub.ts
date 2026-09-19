@@ -67,6 +67,13 @@ export interface VerifyTokenResult {
 export interface WsHubDeps {
   redis: RedisSubscriberLike;
   verifyToken: (token: string) => Promise<VerifyTokenResult>;
+  // F2 (final review): WS-рукопожатие не подчиняется CORS (checkOrigin в
+  // session.ts защищает только HTTP-сторону) — без этой проверки страница с
+  // чужого origin могла бы открыть сокет и получать события компании,
+  // используя только то, что cookie сессии уедет с запросом (SameSite=Strict
+  // сегодня это ещё не пускает, но это свойство cookie, а не WS-хаба, и его
+  // однажды могут ослабить). Тот же список, что использует checkOrigin.
+  allowedOrigins: string[];
   // Переопределяется только в тестах, чтобы не ждать DEFAULT_SUBSCRIBE_TIMEOUT_MS
   // по-настоящему — в проде всегда берётся значение по умолчанию.
   subscribeTimeoutMs?: number;
@@ -228,6 +235,19 @@ export async function initWebSocketHub(server: HttpServer, deps: WsHubDeps): Pro
   redisSubscriber.on("pmessage", handlePMessage);
 
   wss.on("connection", (socket: WebSocket, request: IncomingMessage) => {
+    // F2 (final review): проверяем Origin ДО cookie/токена и отдельным
+    // кодом (4403, а не 4401) — это структурная проверка "с этой страницы
+    // вообще можно открывать сокет", а не "эта сессия недействительна".
+    // Апгрейд принимается на уровне протокола ws раньше (см. комментарий
+    // над initWebSocketHub), поэтому закрыть с прикладным кодом можно
+    // только здесь, после события "connection" — так же, как уже сделано
+    // для 4401.
+    const origin = request.headers.origin;
+    if (!origin || !deps.allowedOrigins.includes(origin)) {
+      socket.close(4403, "Недопустимый источник");
+      return;
+    }
+
     const token = parseSessionCookie(request.headers.cookie);
     if (!token) {
       socket.close(4401, "Требуется авторизация");
@@ -393,7 +413,7 @@ export async function createProductionWsHubDeps(config: Config): Promise<WsHubDe
   });
 
   const redisLike: RedisSubscriberLike = redis;
-  return { redis: redisLike, verifyToken };
+  return { redis: redisLike, verifyToken, allowedOrigins: config.allowedOrigins };
 }
 
 // Эндпоинт называется .well-known/jwks.json, но исторически (и осознанно —

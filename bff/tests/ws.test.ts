@@ -57,6 +57,8 @@ async function fakeVerifyToken(token: string): Promise<VerifyTokenResult> {
   return result;
 }
 
+const ALLOWED_ORIGIN = "http://localhost:5173";
+
 let server: Server;
 let fakeRedis: FakeRedisSubscriber;
 let port: number;
@@ -65,15 +67,25 @@ const openSockets: WebSocket[] = [];
 async function startHub(): Promise<void> {
   server = createServer();
   fakeRedis = new FakeRedisSubscriber();
-  await initWebSocketHub(server, { redis: fakeRedis, verifyToken: fakeVerifyToken });
+  await initWebSocketHub(server, {
+    redis: fakeRedis,
+    verifyToken: fakeVerifyToken,
+    allowedOrigins: [ALLOWED_ORIGIN],
+  });
   await new Promise<void>((resolve) => server.listen(0, resolve));
   port = (server.address() as AddressInfo).port;
 }
 
-function connect(cookie: string | undefined): WebSocket {
-  const socket = new WebSocket(`ws://127.0.0.1:${port}/ws`, {
-    headers: cookie ? { Cookie: cookie } : {},
-  });
+// origin по умолчанию — разрешённый: большинству существующих тестов (про
+// cookie/токен/доставку событий) проверка Origin из F2 не касается, им
+// важно только пройти её и попасть дальше в проверку токена. `null` —
+// отдельный сигнал "заголовок Origin вовсе не отправлять" (в отличие от
+// default-параметра, который сработал бы и на explicit undefined).
+function connect(cookie: string | undefined, origin: string | null = ALLOWED_ORIGIN): WebSocket {
+  const headers: Record<string, string> = {};
+  if (cookie) headers.Cookie = cookie;
+  if (origin !== null) headers.Origin = origin;
+  const socket = new WebSocket(`ws://127.0.0.1:${port}/ws`, { headers });
   openSockets.push(socket);
   return socket;
 }
@@ -135,6 +147,34 @@ afterEach(async () => {
 });
 
 describe("initWebSocketHub", () => {
+  // F2 (final review): живая проверка ревьюера — Origin: http://evil.com
+  // получал 101 Switching Protocols, потому что WS-рукопожатие не
+  // проверялось нигде. Рядом с существующими тестами на 4401 (см. ниже),
+  // но отдельным кодом (4403), чтобы SPA могло отличить "чужой источник"
+  // от "истёкшая/отсутствующая сессия".
+  it("сокет с недопустимым Origin закрывается кодом 4403 и не получает событий, даже с валидным токеном", async () => {
+    await startHub();
+    const socket = connect("session=token-company-a", "http://evil.com");
+    await waitForOpen(socket);
+    const { events } = collectDealEvents(socket);
+
+    const closeInfo = await waitForClose(socket);
+    expect(closeInfo.code).toBe(4403);
+
+    publish("deal-events:company-a", { type: "deal.created", seq: 1, deal_id: "d1", at: "2026-01-01T00:00:00Z" });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(events).toHaveLength(0);
+  });
+
+  it("сокет вовсе без заголовка Origin закрывается кодом 4403", async () => {
+    await startHub();
+    const socket = connect("session=token-company-a", null);
+    await waitForOpen(socket);
+
+    const closeInfo = await waitForClose(socket);
+    expect(closeInfo.code).toBe(4403);
+  });
+
   it("сокет без валидной cookie закрывается кодом 4401 и не получает событий", async () => {
     await startHub();
     const socket = connect(undefined);
@@ -250,6 +290,7 @@ describe("initWebSocketHub", () => {
       initWebSocketHub(hangingServer, {
         redis: hangingRedis,
         verifyToken: fakeVerifyToken,
+        allowedOrigins: [ALLOWED_ORIGIN],
         // Короткий таймаут — тест не должен реально ждать боевые 5 секунд
         // (DEFAULT_SUBSCRIBE_TIMEOUT_MS), только доказать сам механизм.
         subscribeTimeoutMs: 50,
