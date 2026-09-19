@@ -2,7 +2,6 @@ import type {
   CreateDealInput,
   Deal,
   DashboardCard,
-  DocumentStatus,
   NotificationItem,
   ScenarioCard,
   SettlementScenario,
@@ -110,18 +109,27 @@ export const api = {
 
   getDeal: (id: string) => request<{ deal: Deal }>(`/deals/${id}`),
 
-  getScenarios: () => request<{ scenarios: ScenarioCard[] }>("/scenarios"),
+  // Котировки коммиссии зависят от параметров конкретной сделки (коридор,
+  // сумма) — эндпоинт всегда per-deal, глобального /scenarios в контракте
+  // нет (см. README «Контракт для SPA», bff/src/routes/deals.ts).
+  getScenarios: (dealId: string) =>
+    request<{ corridorId: string; scenarios: ScenarioCard[] }>(`/deals/${dealId}/scenarios`),
 
-  chooseScenario: (dealId: string, scenario: SettlementScenario) =>
+  // version — оптимистическая блокировка core (см. types/api.ts Deal.version):
+  // без неё core отвечает 409 VERSION_CONFLICT.
+  chooseScenario: (dealId: string, scenario: SettlementScenario, version: number) =>
     request<{ deal: Deal }>(`/deals/${dealId}/scenario`, {
       method: "POST",
-      body: JSON.stringify({ scenario }),
+      body: JSON.stringify({ scenario, version }),
     }),
 
-  setDocumentStatus: (dealId: string, documentId: string, status: DocumentStatus) =>
-    request<{ document: unknown }>(`/deals/${dealId}/documents/${documentId}`, {
-      method: "PATCH",
-      body: JSON.stringify({ status }),
+  // Единственное действие SPA над документом — подать на проверку; остальные
+  // статусы (uploaded/under_review/approved) выставляет эмулятор core, а не
+  // произвольный PATCH — это наследие мока, убранное в Task 3.
+  submitDocument: (dealId: string, documentId: string, version: number) =>
+    request<{ deal: Deal }>(`/deals/${dealId}/documents/${documentId}/submit`, {
+      method: "POST",
+      body: JSON.stringify({ version }),
     }),
 
   getTracking: (dealId: string) =>

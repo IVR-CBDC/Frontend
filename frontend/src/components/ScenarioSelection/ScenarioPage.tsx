@@ -1,43 +1,92 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api } from "../../api/client";
+import { ApiError, messageFor } from "../../api/errors";
 import type { ScenarioCard, SettlementScenario } from "../../types/api";
 
-// Мех��ническое обновление под новый контракт (ScenarioCard вместо старого
-// мок-типа ScenarioOption): costLabel в контракте нет, вместо неё —
-// commission (котировка service-commission) и available/unavailableReason.
-// Полноценный редизайн карточек — задача Task 3/4, здесь только то, что
-// нужно, чтобы дерево типов оставалось зелёным.
 function costLabel(option: ScenarioCard): string {
   if (!option.available) return option.unavailableReason ?? "Недоступно";
   if (!option.commission) return "Уточняется";
-  return `${new Intl.NumberFormat("ru-RU").format(option.commission.total)}`;
+  return new Intl.NumberFormat("ru-RU").format(option.commission.total);
 }
 
 export function ScenarioPage() {
   const { dealId } = useParams<{ dealId: string }>();
   const navigate = useNavigate();
   const [scenarios, setScenarios] = useState<ScenarioCard[] | null>(null);
+  // Версия сделки нужна для оптимистической блокировки при POST .../scenario
+  // (иначе core отвечает 409 VERSION_CONFLICT) — берём её из GET .../deals/:id,
+  // т.к. GET .../scenarios её не отдаёт (см. README «Контракт для SPA»).
+  const [dealVersion, setDealVersion] = useState<number | null>(null);
   const [selected, setSelected] = useState<SettlementScenario | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Недоступность service-commission (503 UPSTREAM_UNAVAILABLE) — это
+  // состояние всего экрана, а не отдельной карточки (план 05: BFF отвечает
+  // 503 на весь ответ, карточками available:false такое не размечается),
+  // поэтому у него отдельная ветка рендера с кнопкой "Повторить", а не общий
+  // блок ошибки подтверждения.
+  const [loadUnavailable, setLoadUnavailable] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
-  useEffect(() => {
-    api.getScenarios().then((data) => setScenarios(data.scenarios));
-  }, []);
+  const load = useCallback(() => {
+    if (!dealId) return;
+    setLoadUnavailable(false);
+    setLoadError(null);
+    setScenarios(null);
+    Promise.all([api.getDeal(dealId), api.getScenarios(dealId)])
+      .then(([dealRes, scenariosRes]) => {
+        setDealVersion(dealRes.deal.version);
+        setScenarios(scenariosRes.scenarios);
+      })
+      .catch((e) => {
+        if (e instanceof ApiError && e.code === "UPSTREAM_UNAVAILABLE") {
+          setLoadUnavailable(true);
+        } else {
+          setLoadError(messageFor(e));
+        }
+      });
+  }, [dealId]);
+
+  useEffect(() => load(), [load]);
 
   async function confirm() {
-    if (!selected || !dealId) return;
+    if (!selected || !dealId || dealVersion === null) return;
     setSubmitting(true);
     setError(null);
     try {
-      await api.chooseScenario(dealId, selected);
+      await api.chooseScenario(dealId, selected, dealVersion);
       navigate(`/deals/${dealId}/tracking`);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Не удалось сохранить выбор");
+      if (e instanceof ApiError && e.code === "VERSION_CONFLICT") {
+        // Кто-то другой изменил сделку, пока мы держали устаревшую version —
+        // выбор нужно сделать заново на свежих данных, а не пытаться
+        // повторить тот же запрос.
+        setError("Сделка изменилась, данные обновлены — выберите сценарий ещё раз");
+        setSelected(null);
+        load();
+      } else {
+        setError(messageFor(e));
+      }
     } finally {
       setSubmitting(false);
     }
+  }
+
+  if (loadUnavailable) {
+    return (
+      <div>
+        <h1 className="page-title">Выберите сценарий расчёта</h1>
+        <div className="panel" style={{ padding: 18 }}>
+          <p style={{ marginBottom: 12 }}>
+            Сервис расчёта комиссии временно недоступен. Попробуйте ещё раз чуть позже.
+          </p>
+          <button className="btn btn-secondary" onClick={load}>
+            Повторить
+          </button>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -47,7 +96,8 @@ export function ScenarioPage() {
         Сравните сроки, стоимость и ограничения — решение стоит принять осознанно, а не по умолчанию.
       </p>
 
-      {!scenarios && <div style={{ color: "var(--text-muted)" }}>Загрузка вариантов…</div>}
+      {loadError && <div className="field-error" style={{ marginBottom: 12 }}>{loadError}</div>}
+      {!scenarios && !loadError && <div style={{ color: "var(--text-muted)" }}>Загрузка вариантов…</div>}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 14, marginBottom: 22 }}>
         {scenarios?.map((option) => {
@@ -57,11 +107,13 @@ export function ScenarioPage() {
               key={option.id}
               type="button"
               onClick={() => setSelected(option.id)}
+              disabled={!option.available}
               className="panel"
               style={{
                 textAlign: "left",
                 padding: 18,
-                cursor: "pointer",
+                cursor: option.available ? "pointer" : "not-allowed",
+                opacity: option.available ? 1 : 0.6,
                 borderColor: isSelected ? "var(--cyan-500)" : "var(--line)",
                 borderWidth: isSelected ? 2 : 1,
                 background: isSelected ? "#f0fbfc" : "var(--paper-100)",
@@ -87,7 +139,7 @@ export function ScenarioPage() {
 
       {error && <div className="field-error" style={{ marginBottom: 12 }}>{error}</div>}
 
-      <button className="btn btn-primary" onClick={confirm} disabled={!selected || submitting}>
+      <button className="btn btn-primary" onClick={confirm} disabled={!selected || submitting || dealVersion === null}>
         {submitting ? "Сохраняем…" : "Подтвердить сценарий"}
       </button>
     </div>

@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { api } from "../../api/client";
+import { ApiError, messageFor } from "../../api/errors";
 import type { Deal, DocumentStatus } from "../../types/api";
 
 const statusLabel: Record<DocumentStatus, string> = {
@@ -19,33 +20,59 @@ const statusColor: Record<DocumentStatus, string> = {
   rejected: "var(--red-600)",
 };
 
+// Единственное действие SPA над документом — подать его на проверку.
+// Остальные статусы (uploaded/under_review/approved) выставляет эмулятор
+// service-core сам по ходу проверки — произвольный PATCH статуса был
+// наследием мока и Task 3 его убирает.
+const SUBMITTABLE_STATUSES: DocumentStatus[] = ["missing", "rejected"];
+
 export function DocumentsPage() {
   const { dealId } = useParams<{ dealId: string }>();
   const [deal, setDeal] = useState<Deal | null>(null);
   const [busyDocId, setBusyDocId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
-  function load() {
-    if (dealId) api.getDeal(dealId).then((d) => setDeal(d.deal));
-  }
-  useEffect(load, [dealId]);
-
-  async function markUploaded(documentId: string) {
+  const load = useCallback(() => {
     if (!dealId) return;
+    setLoadError(null);
+    api
+      .getDeal(dealId)
+      .then((d) => setDeal(d.deal))
+      .catch((e) => setLoadError(messageFor(e)));
+  }, [dealId]);
+  useEffect(() => load(), [load]);
+
+  async function submit(documentId: string) {
+    if (!dealId || !deal) return;
     setBusyDocId(documentId);
+    setError(null);
     try {
-      await api.setDocumentStatus(dealId, documentId, "uploaded");
+      await api.submitDocument(dealId, documentId, deal.version);
       load();
+    } catch (e) {
+      if (e instanceof ApiError && e.code === "VERSION_CONFLICT") {
+        // Сделка изменилась под нами (устаревшая version) — подтягиваем
+        // актуальные данные вместо того, чтобы молча падать.
+        setError("Сделка изменилась, данные обновлены — попробуйте отправить документ ещё раз");
+        load();
+      } else {
+        setError(messageFor(e));
+      }
     } finally {
       setBusyDocId(null);
     }
   }
 
+  if (loadError) return <div className="field-error">{loadError}</div>;
   if (!deal) return <div style={{ color: "var(--text-muted)" }}>Загрузка…</div>;
 
   return (
     <div>
       <h1 className="page-title">Документооборот · {deal.displayId}</h1>
       <p className="page-subtitle">Что нужно, зачем это нужно и на каком этапе находится каждый файл.</p>
+
+      {error && <div className="field-error" style={{ marginBottom: 12 }}>{error}</div>}
 
       <div className="panel">
         {deal.documents.map((doc, i) => (
@@ -62,6 +89,11 @@ export function DocumentsPage() {
             <div style={{ maxWidth: 420 }}>
               <div style={{ fontWeight: 600, fontSize: 14 }}>{doc.name}</div>
               <div style={{ fontSize: 12.5, color: "var(--text-muted)" }}>{doc.purpose}</div>
+              {doc.status === "rejected" && doc.rejectReason && (
+                <div className="field-error" style={{ marginTop: 4, fontSize: 12 }}>
+                  {doc.rejectReason}
+                </div>
+              )}
             </div>
 
             <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
@@ -71,13 +103,13 @@ export function DocumentsPage() {
               >
                 {statusLabel[doc.status]}
               </span>
-              {doc.status === "missing" && (
+              {SUBMITTABLE_STATUSES.includes(doc.status) && (
                 <button
                   className="btn btn-secondary"
-                  onClick={() => markUploaded(doc.id)}
+                  onClick={() => submit(doc.id)}
                   disabled={busyDocId === doc.id}
                 >
-                  {busyDocId === doc.id ? "Загружаем…" : "Загрузить"}
+                  {busyDocId === doc.id ? "Отправляем…" : "Отправить на проверку"}
                 </button>
               )}
             </div>
