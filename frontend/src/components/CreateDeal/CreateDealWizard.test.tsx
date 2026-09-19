@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -148,5 +148,51 @@ describe("CreateDealWizard", () => {
 
     expect(await screen.findByText("Коридор RU→IR не поддерживается")).toBeInTheDocument();
     expect(screen.queryByText(/Ошибка запроса: 400/)).not.toBeInTheDocument();
+  });
+
+  // F14 (final review): раньше проверялся только текущий (последний) шаг —
+  // восстановленный черновик, сохранённый на шаге 3 без страны (например,
+  // сохранён руками через localStorage до того, как страна была заполнена),
+  // уходил на сервер как есть.
+  it("восстановленный черновик с пустым полем на более раннем шаге не уходит на сервер — мастер возвращает на невалидный шаг", async () => {
+    localStorage.setItem(
+      "draft:new-deal",
+      JSON.stringify({
+        form: { counterpartyCountry: "", operationType: "import", amount: 1000, currency: "RUB", counterpartyName: "ООО Ромашка" },
+        step: 3,
+      }),
+    );
+    const user = userEvent.setup();
+    renderWizard();
+
+    expect(screen.getByLabelText("Название контрагента")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Создать сделку" }));
+
+    // Мастер должен вернуть на шаг 1 (страна) и показать его ошибку, а не
+    // отправить запрос с пустой страной.
+    expect(await screen.findByText("Выберите страну контрагента")).toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  // F14 (final review): "1e-5" — валидный ввод для <input type="number">,
+  // но раньше проверка decimals искала точку в raw и её экспоненциальная
+  // запись обходила проверку "не более двух знаков после запятой".
+  it("не пропускает сумму в экспоненциальной записи", async () => {
+    const user = userEvent.setup();
+    renderWizard();
+
+    await user.selectOptions(screen.getByLabelText("Страна контрагента"), "CN");
+    await user.click(screen.getByRole("button", { name: "Далее" }));
+    await user.click(screen.getByRole("button", { name: "Далее" }));
+
+    // fireEvent.change вместо посимвольного user.type: HTML5 number input
+    // санирует value на каждое промежуточное нажатие ("1e" — ещё не валидное
+    // число), эмулировать реальную печать посимвольно здесь не нужно — важно
+    // само поведение amountError на готовой экспоненциальной строке.
+    const amountInput = screen.getByLabelText("Сумма сделки");
+    fireEvent.change(amountInput, { target: { value: "1e-5" } });
+    await user.click(screen.getByRole("button", { name: "Далее" }));
+
+    expect(screen.getByText(/без экспоненциальной записи/i)).toBeInTheDocument();
   });
 });

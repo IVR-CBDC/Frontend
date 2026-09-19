@@ -104,11 +104,13 @@ describe("ScenarioPage", () => {
     });
   }
 
-  it("показывает реальную сумму комиссии из ответа, а не статический текст", async () => {
+  it("показывает реальную сумму комиссии из ответа с валютой сделки, а не статический текст", async () => {
     stubHappyLoad();
     renderPage();
 
-    expect(await screen.findByText("12 345")).toBeInTheDocument();
+    // F6 (final review): сумма без единицы неоднозначна — экран должен
+    // показывать валюту рядом с числом (deal.currency, см. DEAL выше — USD).
+    expect(await screen.findByText("12 345 USD")).toBeInTheDocument();
     expect(screen.queryByText(/от 0,05%/)).not.toBeInTheDocument();
   });
 

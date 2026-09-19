@@ -30,4 +30,17 @@ describe("DealCard", () => {
     expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "42");
     expect(screen.getByText(/Не хватает подтверждающего документа/)).toBeInTheDocument();
   });
+
+  // F5 (final review): counterpartyCountry — ISO-код ("CN"), карточка должна
+  // показывать название страны, а не код.
+  it("показывает название страны, а не ISO-код", () => {
+    render(
+      <MemoryRouter>
+        <DealCard deal={BLOCKED_DEAL} />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByText(/Китай/)).toBeInTheDocument();
+    expect(screen.queryByText("Импорт · CN")).not.toBeInTheDocument();
+  });
 });

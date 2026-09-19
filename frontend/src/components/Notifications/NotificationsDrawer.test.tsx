@@ -74,4 +74,15 @@ describe("NotificationsDrawer", () => {
     // пункт локально считается прочитанным.
     expect(screen.getAllByRole("button", { name: "Прочитано" })).toHaveLength(1);
   });
+
+  // F7 (final review): раньше getNotifications вызывался без .catch — при
+  // ошибке ящик молча показывал "Пока пусто", утверждая неправду.
+  it("показывает ошибку, а не 'Пока пусто', если getNotifications падает", async () => {
+    fetchMock.mockResolvedValue(jsonResponse(503, { code: "UPSTREAM_UNAVAILABLE", error: "Сервис недоступен" }));
+
+    render(<NotificationsDrawer open onClose={() => {}} refreshKey={0} />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Сервис временно недоступен, попробуйте позже");
+    expect(screen.queryByText("Пока пусто.")).not.toBeInTheDocument();
+  });
 });

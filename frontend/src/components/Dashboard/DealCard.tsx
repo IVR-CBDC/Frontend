@@ -2,6 +2,7 @@ import { Link } from "react-router-dom";
 import type { DashboardCard } from "../../types/api";
 import { ProgressBar } from "./ProgressBar";
 import { StatusBadge } from "./StatusBadge";
+import { countryName } from "../../constants/countries";
 
 const operationLabel = { import: "Импорт", export: "Экспорт" };
 
@@ -28,7 +29,9 @@ export function DealCard({ deal }: { deal: DashboardCard }) {
           </div>
           <div style={{ fontWeight: 600, fontSize: 15, marginTop: 2 }}>{deal.counterpartyName}</div>
           <div style={{ fontSize: 12.5, color: "var(--text-muted)", marginTop: 1 }}>
-            {operationLabel[deal.operationType]} · {deal.counterpartyCountry}
+            {/* F5 (final review): counterpartyCountry — ISO-код ("CN"), а не
+                название для отображения — регрессия задачи 2. */}
+            {operationLabel[deal.operationType]} · {countryName(deal.counterpartyCountry)}
           </div>
         </div>
         <StatusBadge stage={deal.stage} />

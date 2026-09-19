@@ -133,4 +133,16 @@ describe("TrackingPage", () => {
     );
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
   });
+
+  // F5 (final review): counterpartyCountry/scenario — машинные коды, а не
+  // текст для показа пользователю.
+  it("показывает название страны и сценария, а не машинные коды", async () => {
+    fetchMock.mockResolvedValue(jsonResponse(200, { deal: { ...DEAL, scenario: "bank_transfer" } }));
+    const { findByText, queryByText } = renderPage();
+
+    expect(await findByText(/Китай/)).toBeInTheDocument();
+    expect(await findByText("Банковский перевод")).toBeInTheDocument();
+    expect(queryByText("bank_transfer")).not.toBeInTheDocument();
+    expect(queryByText(/· CN ·/)).not.toBeInTheDocument();
+  });
 });

@@ -23,13 +23,17 @@ function AppShell() {
   const [unreadCount, setUnreadCount] = useState(0);
   const { toasts, push, dismiss } = useToasts();
 
-  // Счётчик непрочитанных берём из /api/dashboard (там он уже есть) вместо
-  // того, чтобы копить его локальными инкрементами по notification.created —
-  // событие не несёт данных (см. README «Контракт для SPA»), и локальный
-  // счётчик не переживает разрыв соединения: пропущенные во время обрыва
-  // notification.created никогда бы его не увеличили. connection.ack
-  // (в т.ч. после переподключения) — тоже повод перезапросить счётчик по
-  // тому же правилу, что и остальные экраны (см. useRefetch).
+  // Счётчик непрочитанных не копится локальными инкрементами по
+  // notification.created — событие не несёт данных (см. README «Контракт
+  // для SPA»), и локальный счётчик не переживает разрыв соединения:
+  // пропущенные во время обрыва notification.created никогда бы его не
+  // увеличили. connection.ack (в т.ч. после переподключения) — тоже повод
+  // перезапросить счётчик по тому же правилу, что и остальные экраны
+  // (см. useRefetch).
+  //
+  // F14 (final review): раньше счётчик брался из /api/dashboard — целого
+  // списка сделок ради одного числа. getNotifications уже отдаёт unread
+  // (см. bff/src/routes/notifications.ts) — используем его.
   //
   // F7 (final review): раньше запрос шёл вообще без .catch — неудачный
   // фоновый перезапрос счётчика тихо гас как unhandled rejection, а
@@ -38,8 +42,8 @@ function AppShell() {
   // экран), но проглатывать её молча тоже нельзя — логируем.
   const loadUnreadCount = useCallback(() => {
     api
-      .getDashboard()
-      .then((d) => setUnreadCount(d.unreadNotifications))
+      .getNotifications()
+      .then((d) => setUnreadCount(d.unread))
       .catch((e) => console.error("Не удалось обновить счётчик уведомлений:", messageFor(e)));
   }, []);
 

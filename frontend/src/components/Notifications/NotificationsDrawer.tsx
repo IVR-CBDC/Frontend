@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../../api/client";
-import { ApiError } from "../../api/errors";
+import { ApiError, messageFor } from "../../api/errors";
 import type { NotificationItem } from "../../types/api";
 
 const severityColor: Record<NotificationItem["severity"], string> = {
@@ -21,9 +21,19 @@ interface Props {
 
 export function NotificationsDrawer({ open, onClose, refreshKey, onRead }: Props) {
   const [items, setItems] = useState<NotificationItem[]>([]);
+  const [error, setError] = useState<string | null>(null);
 
+  // F7 (final review): раньше getNotifications вызывался вообще без
+  // .catch — при неудаче ящик молча оставался с пустым items и показывал
+  // "Пока пусто", что хуже ошибки: это утверждение неправды (в реальности
+  // список мог быть непустым, просто не загрузился).
   useEffect(() => {
-    if (open) api.getNotifications().then((d) => setItems(d.notifications));
+    if (!open) return;
+    setError(null);
+    api
+      .getNotifications()
+      .then((d) => setItems(d.notifications))
+      .catch((e) => setError(messageFor(e)));
   }, [open, refreshKey]);
 
   async function markRead(id: string) {
@@ -67,7 +77,14 @@ export function NotificationsDrawer({ open, onClose, refreshKey, onRead }: Props
       </div>
 
       <div style={{ overflowY: "auto", flex: 1 }}>
-        {items.length === 0 && <div style={{ padding: 18, color: "var(--text-muted)" }}>Пока пусто.</div>}
+        {error && (
+          <div className="field-error" role="alert" style={{ padding: 18 }}>
+            {error}
+          </div>
+        )}
+        {!error && items.length === 0 && (
+          <div style={{ padding: 18, color: "var(--text-muted)" }}>Пока пусто.</div>
+        )}
         {items.map((n) => (
           <div
             key={n.id}

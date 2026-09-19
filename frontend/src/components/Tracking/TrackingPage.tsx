@@ -6,6 +6,8 @@ import type { Deal } from "../../types/api";
 import { StatusBadge } from "../Dashboard/StatusBadge";
 import { Timeline } from "./Timeline";
 import { useRefetch } from "../../hooks/useRefetch";
+import { countryName } from "../../constants/countries";
+import { SCENARIO_TITLES } from "../../constants/scenarios";
 
 export function TrackingPage() {
   const { dealId } = useParams<{ dealId: string }>();
@@ -60,7 +62,9 @@ export function TrackingPage() {
         <StatusBadge stage={deal.stage} />
       </div>
       <p className="page-subtitle">
-        {deal.counterpartyName} · {deal.counterpartyCountry} · {deal.operationType === "import" ? "Импорт" : "Экспорт"}
+        {/* F5 (final review): counterpartyCountry — ISO-код, не название */}
+        {deal.counterpartyName} · {countryName(deal.counterpartyCountry)} ·{" "}
+        {deal.operationType === "import" ? "Импорт" : "Экспорт"}
       </p>
 
       {deal.hasBlockers && (
@@ -89,7 +93,7 @@ export function TrackingPage() {
 
           <div className="panel" style={{ padding: 16 }}>
             <div style={{ fontSize: 11.5, color: "var(--text-muted)", marginBottom: 4 }}>Сценарий расчёта</div>
-            <div style={{ fontSize: 13.5 }}>{deal.scenario ?? "Не выбран"}</div>
+            <div style={{ fontSize: 13.5 }}>{deal.scenario ? SCENARIO_TITLES[deal.scenario] : "Не выбран"}</div>
             {!deal.scenario && (
               <Link to={`/deals/${deal.id}/scenario`} className="btn btn-secondary" style={{ marginTop: 10, width: "100%", justifyContent: "center" }}>
                 Выбрать сценарий

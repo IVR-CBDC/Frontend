@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { api } from "../../api/client";
 import { COUNTRIES, CURRENCIES } from "../../constants/countries";
 import type { CreateDealInput, OperationType } from "../../types/api";
-import { messageFor } from "../../api/errors";
+import { ApiError, messageFor } from "../../api/errors";
 
 // Черновик мастера переживает перезагрузку страницы (незакоммиченная форма
 // на середине шага — обычная потеря для многошагового мастера) и стирается
@@ -41,6 +41,11 @@ function loadDraft(): { form: CreateDealInput; step: number } | null {
 // запятой" независимо от того, как браузер округлил число внутри.
 function amountError(amount: number, raw: string): string | null {
   if (!amount || amount <= 0) return "Укажите сумму больше нуля";
+  // F14 (final review): раньше count шёл по raw.split(".") — для
+  // экспоненциальной записи ("1e-5", валидной для <input type="number">)
+  // там нет точки вовсе, и проверка молча пропускала пять фактических
+  // знаков после запятой.
+  if (/e/i.test(raw)) return "Сумма: укажите число без экспоненциальной записи";
   const decimals = raw.includes(".") ? raw.split(".")[1]?.length ?? 0 : 0;
   if (decimals > 2) return "Сумма: не более двух знаков после запятой";
   return null;
@@ -48,7 +53,10 @@ function amountError(amount: number, raw: string): string | null {
 
 export function CreateDealWizard() {
   const navigate = useNavigate();
-  const draft = loadDraft();
+  // F14 (final review): loadDraft() парсит localStorage и JSON.parse на
+  // каждый рендер компонента — незачем, черновик читается ровно один раз,
+  // при монтировании.
+  const [draft] = useState(() => loadDraft());
   const [step, setStep] = useState(draft?.step ?? 0);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -78,8 +86,21 @@ export function CreateDealWizard() {
 
   function goNext() {
     if (!validateStep(step)) return;
-    if (step < steps.length - 1) setStep(step + 1);
-    else void submit();
+    if (step < steps.length - 1) {
+      setStep(step + 1);
+      return;
+    }
+    // F14 (final review): проверяем ВСЕ шаги перед отправкой, не только
+    // текущий (последний) — восстановленный черновик мог быть сохранён на
+    // шаге 3 с пустым полем более раннего шага (например, страна),
+    // и такой черновик раньше уходил на сервер как есть.
+    for (let s = 0; s < steps.length; s++) {
+      if (!validateStep(s)) {
+        setStep(s);
+        return;
+      }
+    }
+    void submit();
   }
 
   async function submit() {
@@ -90,12 +111,14 @@ export function CreateDealWizard() {
       localStorage.removeItem(DRAFT_KEY);
       navigate(`/deals/${deal.id}/scenario`);
     } catch (e) {
-      // messageFor смотрит на code, а не на случайно совпавшую строку, но
-      // для VALIDATION_ERROR брифу нужен именно текст, который прислал
-      // BFF (в нём разные причины: неподдерживаемый коридор, дробная
-      // сумма и т.д.) — ApiError.message уже и есть body.error с сервера
-      // (см. api/client.ts), поэтому здесь берём e.message напрямую.
-      setSubmitError(e instanceof Error ? e.message : messageFor(e));
+      // F9 (final review): ветвимся по code, а не по инстансу Error —
+      // messageFor существует именно для того, чтобы не тащить в интерфейс
+      // произвольный e.message (для не-ApiError он был бы на английском,
+      // см. api/errors.ts). Для VALIDATION_ERROR нужен текст, который
+      // прислал BFF (в нём разные причины: неподдерживаемый коридор,
+      // дробная сумма и т.д.) — ApiError.message это и есть body.error
+      // сервера (см. api/client.ts).
+      setSubmitError(e instanceof ApiError && e.code === "VALIDATION_ERROR" ? e.message : messageFor(e));
     } finally {
       setSubmitting(false);
     }
@@ -125,14 +148,33 @@ export function CreateDealWizard() {
         ))}
       </ol>
 
-      <div className="panel" style={{ padding: 24, maxWidth: 480 }}>
+      {/* F14 (final review): раньше это был не <form> — Enter в поле ничего
+          не делал. Кнопки шагов вперёд/отправки теперь submit, "Назад" —
+          явно type="button", чтобы не триггерить submit. */}
+      <form
+        className="panel"
+        style={{ padding: 24, maxWidth: 480 }}
+        onSubmit={(e) => {
+          e.preventDefault();
+          goNext();
+        }}
+        noValidate
+      >
         {step === 0 && (
           <div className="field">
             <label htmlFor="country">Страна контрагента</label>
             <select
               id="country"
               value={form.counterpartyCountry}
-              onChange={(e) => setForm({ ...form, counterpartyCountry: e.target.value })}
+              onChange={(e) => {
+                setForm({ ...form, counterpartyCountry: e.target.value });
+                // F14 (final review): подсказка об ошибке иначе висит до
+                // следующего submit, даже когда пользователь её уже исправляет
+                // (тот же паттерн, что на экране регистрации).
+                if (errors.counterpartyCountry) setErrors({ ...errors, counterpartyCountry: undefined });
+              }}
+              aria-invalid={!!errors.counterpartyCountry}
+              aria-describedby={errors.counterpartyCountry ? "country-error" : undefined}
             >
               <option value="">Выберите страну</option>
               {COUNTRIES.map((c) => (
@@ -141,7 +183,11 @@ export function CreateDealWizard() {
                 </option>
               ))}
             </select>
-            {errors.counterpartyCountry && <span className="field-error">{errors.counterpartyCountry}</span>}
+            {errors.counterpartyCountry && (
+              <span id="country-error" className="field-error" role="alert">
+                {errors.counterpartyCountry}
+              </span>
+            )}
           </div>
         )}
 
@@ -177,9 +223,16 @@ export function CreateDealWizard() {
                   const raw = e.target.value;
                   setAmountRaw(raw);
                   setForm({ ...form, amount: Number(raw) || 0 });
+                  if (errors.amount) setErrors({ ...errors, amount: undefined });
                 }}
+                aria-invalid={!!errors.amount}
+                aria-describedby={errors.amount ? "amount-error" : undefined}
               />
-              {errors.amount && <span className="field-error">{errors.amount}</span>}
+              {errors.amount && (
+                <span id="amount-error" className="field-error" role="alert">
+                  {errors.amount}
+                </span>
+              )}
             </div>
             <div className="field">
               <label htmlFor="currency">Валюта</label>
@@ -202,13 +255,26 @@ export function CreateDealWizard() {
               type="text"
               placeholder="Например, Shenzhen Bay Trading Co."
               value={form.counterpartyName}
-              onChange={(e) => setForm({ ...form, counterpartyName: e.target.value })}
+              onChange={(e) => {
+                setForm({ ...form, counterpartyName: e.target.value });
+                if (errors.counterpartyName) setErrors({ ...errors, counterpartyName: undefined });
+              }}
+              aria-invalid={!!errors.counterpartyName}
+              aria-describedby={errors.counterpartyName ? "counterpartyName-error" : undefined}
             />
-            {errors.counterpartyName && <span className="field-error">{errors.counterpartyName}</span>}
+            {errors.counterpartyName && (
+              <span id="counterpartyName-error" className="field-error" role="alert">
+                {errors.counterpartyName}
+              </span>
+            )}
           </div>
         )}
 
-        {submitError && <div className="field-error" style={{ marginBottom: 12 }}>{submitError}</div>}
+        {submitError && (
+          <div className="field-error" role="alert" style={{ marginBottom: 12 }}>
+            {submitError}
+          </div>
+        )}
 
         <div style={{ display: "flex", justifyContent: "space-between", marginTop: 8 }}>
           <button
@@ -219,11 +285,11 @@ export function CreateDealWizard() {
           >
             Назад
           </button>
-          <button type="button" className="btn btn-primary" onClick={goNext} disabled={submitting}>
+          <button type="submit" className="btn btn-primary" disabled={submitting}>
             {step === steps.length - 1 ? (submitting ? "Создаём…" : "Создать сделку") : "Далее"}
           </button>
         </div>
-      </div>
+      </form>
     </div>
   );
 }

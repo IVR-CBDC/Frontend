@@ -109,17 +109,23 @@ export const api = {
   getDashboard: () =>
     request<{ deals: DashboardCard[]; unreadNotifications: number }>("/dashboard"),
 
-  getNotifications: () => request<{ notifications: NotificationItem[] }>("/notifications"),
+  // F14 (final review): BFF отдаёт unread вместе со списком
+  // (bff/src/routes/notifications.ts) — раньше этот тип его терял, из-за
+  // чего App.tsx был вынужден тянуть весь /api/dashboard только ради
+  // счётчика непрочитанных.
+  getNotifications: () => request<{ notifications: NotificationItem[]; unread: number }>("/notifications"),
 
-  markNotificationRead: (id: string) =>
-    request<{ notification: NotificationItem }>(`/notifications/${id}/read`, { method: "POST" }),
+  // F14 (final review): BFF отвечает 204 (см. bff/src/routes/notifications.ts) —
+  // тело парсить не из чего, раньше тип обещал { notification }, которого
+  // никогда не было.
+  markNotificationRead: (id: string) => request<void>(`/notifications/${id}/read`, { method: "POST" }),
 
   createDeal: (input: CreateDealInput) =>
     request<{ deal: Deal }>("/deals", { method: "POST", body: JSON.stringify(input) }),
 
   getDeal: (id: string) => request<{ deal: Deal }>(`/deals/${id}`),
 
-  // Котировки коммиссии зависят от параметров конкретной сделки (коридор,
+  // Котировки комиссии зависят от параметров конкретной сделки (коридор,
   // сумма) — эндпоинт всегда per-deal, глобального /scenarios в контракте
   // нет (см. README «Контракт для SPA», bff/src/routes/deals.ts).
   getScenarios: (dealId: string) =>
