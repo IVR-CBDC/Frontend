@@ -49,7 +49,7 @@ const openSockets: WebSocket[] = [];
 async function startHub(): Promise<void> {
   server = createServer();
   fakeRedis = new FakeRedisSubscriber();
-  initWebSocketHub(server, { redis: fakeRedis, verifyToken: fakeVerifyToken });
+  await initWebSocketHub(server, { redis: fakeRedis, verifyToken: fakeVerifyToken });
   await new Promise<void>((resolve) => server.listen(0, resolve));
   port = (server.address() as AddressInfo).port;
 }
@@ -131,6 +131,31 @@ describe("initWebSocketHub", () => {
     publish("deal-events:company-a", { type: "deal.created", seq: 1, deal_id: "d1", at: "2026-01-01T00:00:00Z" });
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(events).toHaveLength(0);
+  });
+
+  it("сокет с cookie, но невалидным токеном закрывается кодом 4401, не получает событий и не остаётся в наборе компании", async () => {
+    await startHub();
+    // Кука присутствует (в отличие от первого теста), но verifyToken её отклонит —
+    // это должно попасть в ветку .catch(), а не пройти проверку "нет cookie".
+    const socket = connect("session=tampered-token");
+    await waitForOpen(socket);
+    const { events } = collectDealEvents(socket);
+
+    const closeInfo = await waitForClose(socket);
+    expect(closeInfo.code).toBe(4401);
+
+    // Компания, на которую нацелились бы, если бы токен прошёл проверку —
+    // company-a. Публикуем в её канал и убеждаемся, что событие никуда не
+    // доставляется: сокет не должен был попасть в clientsByCompany, потому
+    // что addClient() вызывается только после успешного .then(), а не в
+    // .catch().
+    publish("deal-events:company-a", { type: "deal.created", seq: 1, deal_id: "d1", at: "2026-01-01T00:00:00Z" });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(events).toHaveLength(0);
+
+    // Сокет так и не должен был появиться в наборе company-a — единственный
+    // внешний способ это проверить без раскрытия внутренней Map целиком.
+    expect(_debugSeenSeqSizes("company-a")).toEqual([]);
   });
 
   it("событие компании A приходит подписчику A и не приходит подписчику B", async () => {

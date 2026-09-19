@@ -6,11 +6,14 @@ import { createProductionWsHubDeps, initWebSocketHub, closeWebSocketHub } from "
 const config = loadConfig();
 const server = createServer(createApp(config));
 
-// Ключ auth и подписка на Redis нужны до того, как хаб начнёт принимать
-// апгрейды — иначе первые клиенты либо не смогут пройти проверку токена,
-// либо пропустят события, опубликованные до того, как psubscribe встал.
+// Ключ auth нужен до апгрейдов WS — иначе первые клиенты не смогут пройти
+// проверку токена. initWebSocketHub() дожидается подтверждённой Redis-
+// подписки (не только вызова psubscribe) прежде чем вернуть управление —
+// поэтому ждём её здесь же, до server.listen(): так HTTP-порт открывается
+// только когда подписка на deal-events:* уже реально подтверждена сервером
+// Redis, и окна, в которое опубликованные события терялись бы, нет.
 const wsHubDeps = await createProductionWsHubDeps(config);
-initWebSocketHub(server, wsHubDeps);
+await initWebSocketHub(server, wsHubDeps);
 
 server.listen(config.port, () => {
   console.log(`Alfa CBDC Hub BFF listening on http://localhost:${config.port}`);

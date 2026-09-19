@@ -134,8 +134,16 @@ function parseDealEvent(message: string): DealEvent | null {
     notificationId: typeof raw.notification_id === "string" ? raw.notification_id : undefined,
     // at не всегда присутствует в реальном payload core (см. отчёт задачи 4) —
     // подстраховываемся временем получения на стороне BFF, а не роняем событие.
-    at: typeof raw.at === "string" ? raw.at : new Date().toISOString(),
+    // Предупреждаем в лог: время получения BFF — не то же самое, что время
+    // события в core, и если это происходит систематически (а не разово),
+    // это симптом на стороне core, который иначе останется незамеченным.
+    at: typeof raw.at === "string" ? raw.at : warnMissingAt(),
   };
+}
+
+function warnMissingAt(): string {
+  console.warn("ws/hub: событие от core без поля at, подставлено время получения BFF");
+  return new Date().toISOString();
 }
 
 function companyIdFromChannel(channel: string): string | null {
@@ -172,12 +180,11 @@ function handlePMessage(_pattern: string, channel: string, message: string): voi
 // невалидный/отсутствующий клиент закрывается кодом 4401 (диапазон 4000-4999
 // зарезервирован под собственные коды приложения, отправить его можно только
 // после успешного handshake, поэтому не раньше события "connection").
-export function initWebSocketHub(server: HttpServer, deps: WsHubDeps): void {
+export async function initWebSocketHub(server: HttpServer, deps: WsHubDeps): Promise<void> {
   wss = new WebSocketServer({ server, path: "/ws" });
   redisSubscriber = deps.redis;
 
   redisSubscriber.on("pmessage", handlePMessage);
-  redisSubscriber.psubscribe(`${CHANNEL_PREFIX}*`);
 
   wss.on("connection", (socket: WebSocket, request: IncomingMessage) => {
     const token = parseSessionCookie(request.headers.cookie);
@@ -213,6 +220,15 @@ export function initWebSocketHub(server: HttpServer, deps: WsHubDeps): void {
         socket.close(4401, "Недействительный токен");
       });
   });
+
+  // Ждём подтверждения подписки от Redis, а не только факта вызова
+  // psubscribe(): ioredis буферизует команды, пока соединение устанавливается,
+  // поэтому вызов psubscribe() до его завершения не гарантирует, что сервер
+  // Redis уже подписал нас на канал. Возвращаем управление вызывающему коду
+  // (index.ts) только после подтверждения — иначе есть окно между стартом
+  // HTTP-сервера и реальной подпиской, в которое опубликованные события
+  // были бы потеряны.
+  await redisSubscriber.psubscribe(`${CHANNEL_PREFIX}*`);
 }
 
 // Закрывает Redis-подписку и все открытые сокеты — вызывается из SIGTERM в
