@@ -27,9 +27,13 @@ COPY src ./src
 RUN pnpm build
 
 
-FROM nginx:alpine AS runtime
+# F11 (final review): стоковый nginx:alpine слушает :80 и не задаёт USER —
+# под политикой "restricted" (или runAsNonRoot: true, план 08) под с ним не
+# стартует, привязка к :80 требует root. nginx-unprivileged — тот же образ,
+# но слушает 8080 и уже настроен на непривилегированного пользователя.
+FROM nginxinc/nginx-unprivileged:alpine AS runtime
 
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/dist /usr/share/nginx/html
 
-EXPOSE 80
+EXPOSE 8080
