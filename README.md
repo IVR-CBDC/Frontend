@@ -8,22 +8,24 @@
 
 ```
 alfa-cbdc-hub/
-├── backend/     BFF-слой (Node.js + Express + WebSocket)
+├── bff/         BFF-слой (Node.js + Express + WebSocket)
 └── frontend/    Клиентское SPA (React + TypeScript + Vite, с поддержкой PWA)
 ```
 
-## Backend (BFF)
+## BFF
 
 Агрегирует данные, реализует бизнес-логику для UI, кеширование и сервис
 уведомлений в реальном времени через WebSocket.
 
 ```bash
-cd backend
-npm install
-npm run dev      # http://localhost:4000, WS: ws://localhost:4000/ws
+cd bff
+pnpm install
+pnpm dev         # http://localhost:4000, WS: ws://localhost:4000/ws
+pnpm test        # vitest
+pnpm typecheck
 ```
 
-Основные REST-эндпоинты:
+Основные REST-эндпоинты (контракт, к которому идёт реализация):
 
 | Метод | Путь | Экран |
 |---|---|---|
@@ -35,8 +37,9 @@ npm run dev      # http://localhost:4000, WS: ws://localhost:4000/ws
 | PATCH | `/api/deals/:dealId/documents/:documentId` | 4. Документооборот |
 | GET | `/api/deals/:id/tracking` | 5. Трекинг сделки |
 
-Данные хранятся в памяти (мок), поэтому перезапуск сервера сбрасывает
-состояние — этого достаточно для демонстрации UX-сценариев из ТЗ.
+Моковые данные удалены: сейчас каждый из этих маршрутов отвечает
+`501 NOT_IMPLEMENTED` (см. `bff/src/routes/deals.ts`) — реальную реализацию
+поверх сервисов бэкенда добавляет отдельная задача (Task 3 плана 05).
 
 ## Frontend (SPA)
 
@@ -61,5 +64,5 @@ npm run dev      # http://localhost:5173, проксирует /api и /ws на 
 
 ```bash
 cd frontend && npm run build   # -> frontend/dist (статика для раздачи любым сервером)
-cd backend && npm run build    # -> backend/dist (node dist/index.js)
+cd bff && pnpm build           # -> bff/dist (node dist/index.js)
 ```
