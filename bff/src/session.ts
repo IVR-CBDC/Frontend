@@ -46,9 +46,18 @@ export function setSession(res: Response, token: string): void {
 
   const expiresInMs = exp !== undefined ? exp * 1000 - Date.now() : undefined;
   if (expiresInMs === undefined || expiresInMs <= 0) {
-    // exp отсутствует или уже в прошлом — service-auth вернул некорректный
-    // токен, с ним всё равно нельзя работать дальше по цепочке.
-    throw new ApiError(502, "UPSTREAM_UNAVAILABLE", "Сервис авторизации вернул некорректный токен");
+    // F9 (final review, дефект плана): раньше здесь был код
+    // UPSTREAM_UNAVAILABLE с 502, хотя план в Global Constraints требует
+    // 503 UPSTREAM_UNAVAILABLE для "сервис недоступен" — один код с двумя
+    // статусами, SPA не может по нему ветвиться. Это другой случай: auth
+    // ответил (сервис доступен), но выдал токен, которым нельзя
+    // пользоваться дальше по цепочке — отдельный код, 502 оставлен как
+    // статус (не 5xx "у нас всё упало", а "апстрим нарушил контракт").
+    throw new ApiError(
+      502,
+      "UPSTREAM_CONTRACT_VIOLATION",
+      "Сервис авторизации вернул некорректный токен",
+    );
   }
 
   res.cookie(COOKIE_NAME, token, cookieOptions(config, expiresInMs));

@@ -1,4 +1,5 @@
 import type { Express, NextFunction, Request, Response } from "express";
+import { clearSession, readToken } from "./session.js";
 
 // Единый конверт ошибок для всех ответов BFF: {code, error}. code —
 // машиночитаемый (фронт ветвится по нему), error — человекочитаемое русское
@@ -28,8 +29,18 @@ export function installErrorHandler(app: Express): void {
   });
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- 4 аргумента обязательны, иначе Express не распознает это как error-handler
-  app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+  app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
     if (err instanceof ApiError) {
+      // F5 (final review): callUpstream пробрасывает 401
+      // TOKEN_EXPIRED/INVALID_TOKEN от апстрима как есть, но раньше
+      // никто не гасил cookie — она HttpOnly, SPA её не видит и не может
+      // удалить сама, поэтому без явного /auth/logout BFF слал бы мёртвый
+      // токен апстримам бесконечно. Гасим сессию здесь же, централизованно
+      // (а не в каждом маршруте отдельно), и только если запрос вообще
+      // пришёл с cookie сессии — иначе это не про восстановление сессии.
+      if ((err.code === "TOKEN_EXPIRED" || err.code === "INVALID_TOKEN") && readToken(req)) {
+        clearSession(res);
+      }
       res.status(err.status).json({ code: err.code, error: err.message });
       return;
     }

@@ -116,7 +116,9 @@ describe("session cookie", () => {
       .send({ login: "a", password: "b" });
 
     expect(response.status).toBe(502);
-    expect(response.body.code).toBe("UPSTREAM_UNAVAILABLE");
+    // F9 (final review): отдельный код от 503 UPSTREAM_UNAVAILABLE — это
+    // не "сервис недоступен", а "апстрим ответил, но нарушил контракт".
+    expect(response.body.code).toBe("UPSTREAM_CONTRACT_VIOLATION");
     expect(response.headers["set-cookie"]).toBeUndefined();
   });
 
@@ -130,7 +132,7 @@ describe("session cookie", () => {
       .send({ login: "a", password: "b" });
 
     expect(response.status).toBe(502);
-    expect(response.body.code).toBe("UPSTREAM_UNAVAILABLE");
+    expect(response.body.code).toBe("UPSTREAM_CONTRACT_VIOLATION");
     expect(response.headers["set-cookie"]).toBeUndefined();
   });
 
@@ -147,6 +149,54 @@ describe("session cookie", () => {
     const clearedByMaxAge = maxAgeMatch ? Number(maxAgeMatch[1]) <= 0 : false;
     const clearedByExpires = expiresMatch ? new Date(expiresMatch[1]).getTime() < Date.now() : false;
     expect(clearedByMaxAge || clearedByExpires).toBe(true);
+  });
+});
+
+describe("гашение мёртвой сессии на 401 от апстрима (F5, final review)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  // Cookie сессии HttpOnly — SPA не может увидеть её и удалить сама. Без
+  // явного gашения на 401 TOKEN_EXPIRED/INVALID_TOKEN BFF слал бы мёртвый
+  // токен апстримам бесконечно, пока пользователь сам не зайдёт в /logout.
+  it("401 TOKEN_EXPIRED от апстрима на запросе с cookie гасит сессию (Set-Cookie с истёкшей датой)", async () => {
+    stubFetchOnce(401, { code: "TOKEN_EXPIRED", error: "Срок действия токена истёк" });
+    const app = createApp(testConfig());
+
+    const response = await request(app).get("/api/auth/me").set("Cookie", "session=stale-token");
+
+    expect(response.status).toBe(401);
+    expect(response.body.code).toBe("TOKEN_EXPIRED");
+    const cookie = parseSetCookie(response);
+    expect(cookie).toMatch(/session=;/);
+    const maxAgeMatch = /Max-Age=(-?\d+)/i.exec(cookie);
+    const expiresMatch = /Expires=([^;]+)/i.exec(cookie);
+    const clearedByMaxAge = maxAgeMatch ? Number(maxAgeMatch[1]) <= 0 : false;
+    const clearedByExpires = expiresMatch ? new Date(expiresMatch[1]).getTime() < Date.now() : false;
+    expect(clearedByMaxAge || clearedByExpires).toBe(true);
+  });
+
+  it("401 INVALID_TOKEN от апстрима на запросе с cookie тоже гасит сессию", async () => {
+    stubFetchOnce(401, { code: "INVALID_TOKEN", error: "Недействительный токен" });
+    const app = createApp(testConfig());
+
+    const response = await request(app).get("/api/auth/me").set("Cookie", "session=tampered");
+
+    expect(response.status).toBe(401);
+    const cookie = parseSetCookie(response);
+    expect(cookie).toMatch(/session=;/);
+  });
+
+  it("401 UNAUTHORIZED от requireSession (нет cookie вовсе) не пытается гасить несуществующую сессию", async () => {
+    const app = createApp(testConfig());
+
+    const response = await request(app).get("/api/auth/me");
+
+    expect(response.status).toBe(401);
+    expect(response.body.code).toBe("UNAUTHORIZED");
+    // Cookie не было — Set-Cookie на "погасить" быть не должно вовсе.
+    expect(response.headers["set-cookie"]).toBeUndefined();
   });
 });
 
