@@ -1,9 +1,11 @@
 import { useEffect, useRef } from "react";
-import { useWebSocket } from "./useWebSocket";
+import { useWsSubscribe } from "./WsProvider";
 import type { DealEvent, WsServerFrame } from "../types/api";
 
 /**
- * Единое правило перезапроса экрана (см. README «Контракт для SPA»):
+ * Единое правило перезапроса экрана (см. README «Контракт для SPA») —
+ * действует на КАЖДОМ экране (F2, final review — раньше было закреплено
+ * только за тремя из пяти):
  *
  * - при монтировании — обычная загрузка;
  * - на КАЖДЫЙ connection.ack, включая переподключения после разрыва — между
@@ -17,8 +19,11 @@ import type { DealEvent, WsServerFrame } from "../types/api";
  * Экран никогда не патчит состояние из полей события — событие лишь
  * триггер, данные всегда приходят из того же REST-эндпоинта, что и при
  * обычной загрузке.
+ *
+ * Подписывается на единственный сокет приложения через WsProvider (F3,
+ * final review) — не открывает свой собственный.
  */
-export function useRefetch(reload: () => void, matches?: (event: DealEvent) => boolean): boolean {
+export function useRefetch(reload: () => void, matches?: (event: DealEvent) => boolean): void {
   const reloadRef = useRef(reload);
   reloadRef.current = reload;
   const matchesRef = useRef(matches);
@@ -32,7 +37,7 @@ export function useRefetch(reload: () => void, matches?: (event: DealEvent) => b
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  return useWebSocket((frame: WsServerFrame) => {
+  useWsSubscribe((frame: WsServerFrame) => {
     if (frame.type === "connection.ack") {
       reloadRef.current();
       return;

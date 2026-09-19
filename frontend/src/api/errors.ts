@@ -14,22 +14,6 @@ export class ApiError extends Error {
   }
 }
 
-// Коды, которыми апстрим (через BFF) сигналит "cookie сессии больше не
-// годится" — BFF уже погасил cookie на своей стороне (Set-Cookie с истёкшей
-// датой), так что SPA остаётся только перевести приложение в anonymous и
-// увести на /login, не пытаясь ничего восстановить.
-//
-// UNAUTHORIZED сюда намеренно не входит: это просто "нет cookie вовсе" —
-// нормальный ответ для первого /api/auth/me никогда не заходившего
-// посетителя, а не признак истёкшей сессии. Если его сюда добавить, самый
-// первый /auth/me от anonymous-пользователя шлёт session-expired и
-// AuthProvider задваивает clearSession ещё до первого логина.
-const AUTH_ERROR_CODES = new Set(["TOKEN_EXPIRED", "INVALID_TOKEN"]);
-
-export function isAuthError(e: unknown): boolean {
-  return e instanceof ApiError && e.status === 401 && AUTH_ERROR_CODES.has(e.code);
-}
-
 // Человекочитаемые тексты по code — специально не по e.message/e.error,
 // чтобы ветвление проверялось тестами именно по коду, а не по случайно
 // совпавшей строке.
@@ -46,12 +30,13 @@ const MESSAGES_BY_CODE: Record<string, string> = {
   INTERNAL_ERROR: "Внутренняя ошибка сервиса, попробуйте позже",
 };
 
+// F9 (final review): не-ApiError — это в основном сбой самого fetch (обрыв
+// сети, DNS, CORS) — e.message у него на английском ("Failed to fetch") и
+// пользователю его показывать нельзя. Такой e.message годится в консоль
+// (для отладки), но не в интерфейс.
 export function messageFor(e: unknown): string {
   if (e instanceof ApiError) {
     return MESSAGES_BY_CODE[e.code] ?? e.message;
   }
-  if (e instanceof Error) {
-    return e.message;
-  }
-  return "Не удалось выполнить запрос";
+  return "Нет связи с сервисом, проверьте подключение";
 }

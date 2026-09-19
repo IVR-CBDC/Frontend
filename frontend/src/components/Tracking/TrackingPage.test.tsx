@@ -2,6 +2,7 @@ import { act, render, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TrackingPage } from "./TrackingPage";
+import { WsProvider } from "../../hooks/WsProvider";
 
 class FakeWebSocket {
   static instances: FakeWebSocket[] = [];
@@ -52,9 +53,11 @@ const DEAL = {
 function renderPage() {
   return render(
     <MemoryRouter initialEntries={["/deals/d1/tracking"]}>
-      <Routes>
-        <Route path="/deals/:dealId/tracking" element={<TrackingPage />} />
-      </Routes>
+      <WsProvider>
+        <Routes>
+          <Route path="/deals/:dealId/tracking" element={<TrackingPage />} />
+        </Routes>
+      </WsProvider>
     </MemoryRouter>,
   );
 }

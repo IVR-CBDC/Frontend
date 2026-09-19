@@ -2,6 +2,7 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DashboardPage } from "./DashboardPage";
+import { WsProvider } from "../../hooks/WsProvider";
 
 class FakeWebSocket {
   static instances: FakeWebSocket[] = [];
@@ -47,7 +48,9 @@ describe("DashboardPage", () => {
   it("перезапрашивает /api/dashboard на connection.ack — главное условие: пропуски во время разрыва не остаются незамеченными", async () => {
     render(
       <MemoryRouter>
-        <DashboardPage />
+        <WsProvider>
+          <DashboardPage />
+        </WsProvider>
       </MemoryRouter>,
     );
 
@@ -62,7 +65,9 @@ describe("DashboardPage", () => {
   it("перезапрашивает на deal.updated, а не патчит карточку из полей события", async () => {
     render(
       <MemoryRouter>
-        <DashboardPage />
+        <WsProvider>
+          <DashboardPage />
+        </WsProvider>
       </MemoryRouter>,
     );
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));

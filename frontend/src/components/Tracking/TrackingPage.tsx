@@ -14,6 +14,9 @@ export function TrackingPage() {
 
   const load = useCallback(() => {
     if (!dealId) return;
+    // F4 (final review): сброс на каждую попытку — иначе разовый сбой
+    // фонового перезапроса (см. useRefetch) навсегда остаётся висеть.
+    setError(null);
     api
       .getDeal(dealId)
       .then((d) => setDeal(d.deal))
@@ -25,11 +28,31 @@ export function TrackingPage() {
   // разрыва, остались бы незамеченными: у pub/sub нет истории событий.
   useRefetch(load, (event) => "dealId" in event && event.dealId === dealId);
 
-  if (error) return <div className="field-error">{error}</div>;
+  // F4 (final review): баннер НАД уже загруженными данными, а не вместо
+  // них — только пока данных ещё вообще не было, экрану нечего показать
+  // под баннером.
+  if (error && !deal) {
+    return (
+      <div className="field-error" role="alert">
+        {error}{" "}
+        <button className="btn btn-ghost" onClick={load} style={{ marginLeft: 8 }}>
+          Повторить
+        </button>
+      </div>
+    );
+  }
   if (!deal) return <div style={{ color: "var(--text-muted)" }}>Загрузка…</div>;
 
   return (
     <div>
+      {error && (
+        <div className="field-error" role="alert" style={{ marginBottom: 12 }}>
+          {error}{" "}
+          <button className="btn btn-ghost" onClick={load} style={{ marginLeft: 8 }}>
+            Повторить
+          </button>
+        </div>
+      )}
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 4 }}>
         <h1 className="page-title" style={{ margin: 0 }}>
           {deal.displayId}

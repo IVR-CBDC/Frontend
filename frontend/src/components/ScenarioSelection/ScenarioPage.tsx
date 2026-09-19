@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api } from "../../api/client";
 import { ApiError, messageFor } from "../../api/errors";
 import type { ScenarioCard, SettlementScenario } from "../../types/api";
+import { useRefetch } from "../../hooks/useRefetch";
 
 function costLabel(option: ScenarioCard): string {
   if (!option.available) return option.unavailableReason ?? "Недоступно";
@@ -48,7 +49,11 @@ export function ScenarioPage() {
       });
   }, [dealId]);
 
-  useEffect(() => load(), [load]);
+  // F2 (final review): раньше был голый useEffect — экран не видел ни
+  // одного кадра WS. Сценарий подбирает данные, актуальные на момент
+  // просмотра (котировка комиссии, version сделки), и оба протухают без
+  // правила перезапроса — см. README «Контракт для SPA».
+  useRefetch(load, (event) => "dealId" in event && event.dealId === dealId);
 
   async function confirm() {
     if (!selected || !dealId || dealVersion === null) return;

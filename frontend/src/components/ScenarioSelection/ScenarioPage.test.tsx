@@ -3,9 +3,20 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ScenarioPage } from "./ScenarioPage";
+import { WsProvider } from "../../hooks/WsProvider";
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+}
+
+// jsdom не реализует WebSocket — этому файлу не важно поведение сокета, но
+// WsProvider его открывает при монтировании (ScenarioPage теперь под
+// useRefetch, F2), поэтому нужна хотя бы заглушка.
+class FakeWebSocket {
+  onmessage: ((event: { data: string }) => void) | null = null;
+  onclose: ((event: { code: number }) => void) | null = null;
+  onerror: (() => void) | null = null;
+  close() {}
 }
 
 const DEAL = {
@@ -62,10 +73,12 @@ const SCENARIOS = [
 function renderPage() {
   return render(
     <MemoryRouter initialEntries={["/deals/d1/scenario"]}>
-      <Routes>
-        <Route path="/deals/:dealId/scenario" element={<ScenarioPage />} />
-        <Route path="/deals/:dealId/tracking" element={<div>Экран трекинга</div>} />
-      </Routes>
+      <WsProvider>
+        <Routes>
+          <Route path="/deals/:dealId/scenario" element={<ScenarioPage />} />
+          <Route path="/deals/:dealId/tracking" element={<div>Экран трекинга</div>} />
+        </Routes>
+      </WsProvider>
     </MemoryRouter>,
   );
 }
@@ -76,6 +89,7 @@ describe("ScenarioPage", () => {
   beforeEach(() => {
     fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("WebSocket", FakeWebSocket as unknown as typeof WebSocket);
   });
 
   afterEach(() => {

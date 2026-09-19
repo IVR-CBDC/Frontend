@@ -42,23 +42,33 @@ describe("api client", () => {
     await expect(api.auth.login({ login: "a", password: "wrong" })).rejects.toBeInstanceOf(ApiError);
   });
 
-  it("на 401 TOKEN_EXPIRED посреди сессии сигналит session-expired через authEvents", async () => {
-    fetchMock.mockResolvedValue(jsonResponse(401, { code: "TOKEN_EXPIRED", error: "Сессия истекла" }));
+  // F1 (final review): client.ts больше не фильтрует по code — решение,
+  // считать ли 401 истечением сессии, теперь принимает AuthProvider
+  // (у него есть контекст: текущий AuthStatus), а не этот слой. Здесь
+  // проверяем только то, что client.ts дисциплинированно шлёт сигнал на
+  // КАЖДЫЙ 401, включая доминирующий в проде UNAUTHORIZED (см.
+  // AuthProvider.test.tsx — там же проверяется, что сама реакция зависит
+  // от статуса).
+  it.each(["TOKEN_EXPIRED", "INVALID_TOKEN", "UNAUTHORIZED", "INVALID_CREDENTIALS"])(
+    "на любой 401 (%s) сигналит session-expired через authEvents",
+    async (code) => {
+      fetchMock.mockResolvedValue(jsonResponse(401, { code, error: "x" }));
+      const listener = vi.fn();
+      authEvents.addEventListener(SESSION_EXPIRED_EVENT, listener);
+
+      await expect(api.getDashboard()).rejects.toBeInstanceOf(ApiError);
+      expect(listener).toHaveBeenCalledTimes(1);
+
+      authEvents.removeEventListener(SESSION_EXPIRED_EVENT, listener);
+    },
+  );
+
+  it("не сигналит session-expired для ошибок с другим статусом", async () => {
+    fetchMock.mockResolvedValue(jsonResponse(403, { code: "FORBIDDEN_ORIGIN", error: "x" }));
     const listener = vi.fn();
     authEvents.addEventListener(SESSION_EXPIRED_EVENT, listener);
 
     await expect(api.getDashboard()).rejects.toBeInstanceOf(ApiError);
-    expect(listener).toHaveBeenCalledTimes(1);
-
-    authEvents.removeEventListener(SESSION_EXPIRED_EVENT, listener);
-  });
-
-  it("не сигналит session-expired для бизнес-ошибок вроде неверного пароля", async () => {
-    fetchMock.mockResolvedValue(jsonResponse(401, { code: "INVALID_CREDENTIALS", error: "Неверный логин или пароль" }));
-    const listener = vi.fn();
-    authEvents.addEventListener(SESSION_EXPIRED_EVENT, listener);
-
-    await expect(api.auth.login({ login: "a", password: "wrong" })).rejects.toBeInstanceOf(ApiError);
     expect(listener).not.toHaveBeenCalled();
 
     authEvents.removeEventListener(SESSION_EXPIRED_EVENT, listener);

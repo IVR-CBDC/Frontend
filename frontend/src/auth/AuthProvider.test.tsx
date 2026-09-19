@@ -62,4 +62,46 @@ describe("AuthProvider — session expiry mid-flight", () => {
 
     await waitFor(() => expect(screen.getByText("Экран входа")).toBeInTheDocument());
   });
+
+  // F1 (final review): доминирующий сценарий истечения сессии — BFF ставит
+  // cookie с maxAge из exp токена, поэтому браузер стирает cookie раньше,
+  // чем апстрим успел бы отвергнуть токен, и requireSession отвечает именно
+  // 401 UNAUTHORIZED (не TOKEN_EXPIRED/INVALID_TOKEN). Если это не приводит
+  // к anonymous, пользователь застревает: экраны красные, /login видит
+  // authenticated и редиректит обратно.
+  it("401 UNAUTHORIZED посреди сессии (доминирующий путь истечения) тоже переводит приложение в anonymous → редирект на /login", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(200, {
+        user_id: "u1",
+        login: "ivan",
+        name: "Иван",
+        company: { id: "c1", name: "ООО Ромашка", inn: "1234567890" },
+      }),
+    );
+
+    render(
+      <MemoryRouter initialEntries={["/deals/1/tracking"]}>
+        <AuthProvider>
+          <Routes>
+            <Route path="/login" element={<div>Экран входа</div>} />
+            <Route
+              path="/deals/:id/tracking"
+              element={
+                <RequireAuth>
+                  <Protected />
+                </RequireAuth>
+              }
+            />
+          </Routes>
+        </AuthProvider>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => expect(screen.getByText("Защищённый экран")).toBeInTheDocument());
+
+    fetchMock.mockResolvedValueOnce(jsonResponse(401, { code: "UNAUTHORIZED", error: "Не авторизован" }));
+    await expect(api.getDashboard()).rejects.toBeTruthy();
+
+    await waitFor(() => expect(screen.getByText("Экран входа")).toBeInTheDocument());
+  });
 });

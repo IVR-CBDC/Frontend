@@ -1,6 +1,7 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { useWebSocket } from "./useWebSocket";
+import type { ReactNode } from "react";
+import { WsProvider, useWsStatus, useWsSubscribe } from "./WsProvider";
 import { authEvents, SESSION_EXPIRED_EVENT } from "../api/client";
 import type { WsServerFrame } from "../types/api";
 
@@ -33,7 +34,11 @@ class FakeWebSocket {
   }
 }
 
-describe("useWebSocket", () => {
+function wrapper({ children }: { children: ReactNode }) {
+  return <WsProvider>{children}</WsProvider>;
+}
+
+describe("WsProvider", () => {
   beforeEach(() => {
     FakeWebSocket.instances = [];
     vi.stubGlobal("WebSocket", FakeWebSocket as unknown as typeof WebSocket);
@@ -51,9 +56,9 @@ describe("useWebSocket", () => {
     return socket;
   }
 
-  it("connection.ack вызывает onEvent на первом подключении и на каждом переподключении после разрыва", () => {
+  it("connection.ack доходит до подписчика на первом подключении и на каждом переподключении после разрыва", () => {
     const onEvent = vi.fn();
-    renderHook(() => useWebSocket(onEvent));
+    renderHook(() => useWsSubscribe(onEvent), { wrapper });
 
     lastSocket().emitMessage({ type: "connection.ack" });
     expect(onEvent).toHaveBeenCalledWith({ type: "connection.ack" });
@@ -61,20 +66,18 @@ describe("useWebSocket", () => {
 
     // Разрыв без прикладного кода закрытия — обычный обрыв связи.
     lastSocket().emitClose(1006);
-    // Переподключение не мгновенное — с задержкой (проверяется отдельным тестом),
-    // но оно обязано случиться.
     vi.runOnlyPendingTimers();
     expect(FakeWebSocket.instances.length).toBe(2);
 
     lastSocket().emitMessage({ type: "connection.ack" });
-    // Именно это — главный тест из брифа: без повторного вызова на реконнекте
-    // экран не перезапросит данные и дыра после разрыва останется незамеченной.
+    // Главный инвариант: без повторного вызова на реконнекте экран не
+    // перезапросит данные и дыра после разрыва останется незамеченной.
     expect(onEvent).toHaveBeenCalledTimes(2);
   });
 
-  it("на deal.updated вызывает onEvent с самим событием (перезапрос — забота вызывающего, не хука)", () => {
+  it("на deal.updated доставляет подписчику само событие", () => {
     const onEvent = vi.fn();
-    renderHook(() => useWebSocket(onEvent));
+    renderHook(() => useWsSubscribe(onEvent), { wrapper });
 
     const event: WsServerFrame = { type: "deal.updated", seq: 1, dealId: "d1", at: "2026-01-01T00:00:00Z" };
     lastSocket().emitMessage(event);
@@ -82,12 +85,22 @@ describe("useWebSocket", () => {
     expect(onEvent).toHaveBeenCalledWith(event);
   });
 
+  it("один провайдер — один сокет для всех подписчиков (F3)", () => {
+    renderHook(
+      () => {
+        useWsSubscribe(() => {});
+        useWsSubscribe(() => {});
+      },
+      { wrapper },
+    );
+
+    expect(FakeWebSocket.instances.length).toBe(1);
+  });
+
   it("переподключается с нарастающей задержкой и не уходит в плотный цикл переподключений", () => {
-    const onEvent = vi.fn();
-    renderHook(() => useWebSocket(onEvent));
+    renderHook(() => useWsSubscribe(() => {}), { wrapper });
 
     lastSocket().emitClose(1006);
-    // Сразу после разрыва новый сокет ещё не должен быть открыт.
     expect(FakeWebSocket.instances.length).toBe(1);
 
     vi.advanceTimersByTime(500);
@@ -98,8 +111,6 @@ describe("useWebSocket", () => {
 
     const secondAttemptCount = FakeWebSocket.instances.length;
     lastSocket().emitClose(1006);
-    // Задержка второй попытки не меньше первой (экспоненциальный рост, не
-    // тайт-луп из мгновенных реконнектов).
     vi.advanceTimersByTime(1500);
     expect(FakeWebSocket.instances.length).toBe(secondAttemptCount);
 
@@ -108,11 +119,10 @@ describe("useWebSocket", () => {
   });
 
   it("закрытие с кодом 4401 не переподключается и сигналит session-expired", () => {
-    const onEvent = vi.fn();
     const listener = vi.fn();
     authEvents.addEventListener(SESSION_EXPIRED_EVENT, listener);
 
-    renderHook(() => useWebSocket(onEvent));
+    renderHook(() => useWsSubscribe(() => {}), { wrapper });
     lastSocket().emitClose(4401);
 
     expect(listener).toHaveBeenCalledTimes(1);
@@ -124,8 +134,7 @@ describe("useWebSocket", () => {
   });
 
   it("размонтирование останавливает переподключения", () => {
-    const onEvent = vi.fn();
-    const { unmount } = renderHook(() => useWebSocket(onEvent));
+    const { unmount } = renderHook(() => useWsSubscribe(() => {}), { wrapper });
 
     lastSocket().emitClose(1006);
     unmount();
@@ -134,14 +143,42 @@ describe("useWebSocket", () => {
     expect(FakeWebSocket.instances.length).toBe(1);
   });
 
-  it("возвращает isLive: true после connection.ack, false после разрыва", () => {
-    const { result } = renderHook(() => useWebSocket(() => {}));
-    expect(result.current).toBe(false);
+  it("useWsStatus: live после connection.ack, connecting после разрыва", () => {
+    const { result } = renderHook(() => useWsStatus(), { wrapper });
+    expect(result.current).toBe("connecting");
 
     act(() => lastSocket().emitMessage({ type: "connection.ack" }));
-    expect(result.current).toBe(true);
+    expect(result.current).toBe("live");
 
     act(() => lastSocket().emitClose(1006));
-    expect(result.current).toBe(false);
+    expect(result.current).toBe("connecting");
+  });
+
+  // F12 (final review): недопустимый Origin отклоняется на апгрейде (403) —
+  // клиент никогда не видит 4401 и не получает connection.ack, поэтому без
+  // потолка попыток индикатор вечно показывал бы "Подключение…", хотя это
+  // уже не временный сетевой сбой, а ошибка конфигурации.
+  it("useWsStatus: после серии неудач без единого connection.ack становится stalled", () => {
+    const { result } = renderHook(() => useWsStatus(), { wrapper });
+
+    for (let i = 0; i < 5; i++) {
+      act(() => lastSocket().emitClose(1006));
+      act(() => vi.runOnlyPendingTimers());
+    }
+
+    expect(result.current).toBe("stalled");
+  });
+
+  it("useWsStatus: connection.ack после stalled возвращает live (сеть ожила)", () => {
+    const { result } = renderHook(() => useWsStatus(), { wrapper });
+
+    for (let i = 0; i < 5; i++) {
+      act(() => lastSocket().emitClose(1006));
+      act(() => vi.runOnlyPendingTimers());
+    }
+    expect(result.current).toBe("stalled");
+
+    act(() => lastSocket().emitMessage({ type: "connection.ack" }));
+    expect(result.current).toBe("live");
   });
 });

@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { useParams } from "react-router-dom";
 import { api } from "../../api/client";
 import { ApiError, messageFor } from "../../api/errors";
 import type { Deal, DocumentStatus } from "../../types/api";
+import { useRefetch } from "../../hooks/useRefetch";
 
 const statusLabel: Record<DocumentStatus, string> = {
   missing: "Не загружен",
@@ -41,7 +42,13 @@ export function DocumentsPage() {
       .then((d) => setDeal(d.deal))
       .catch((e) => setLoadError(messageFor(e)));
   }, [dealId]);
-  useEffect(() => load(), [load]);
+
+  // F2 (final review): без правила перезапроса экран не видит ни одного
+  // кадра WS — эмулятор гоняет uploaded → under_review → approved|rejected
+  // ровно пока пользователь смотрит на экран, и без этого статус навсегда
+  // застревал бы на "Загружен", а version в состоянии протухал бы (обычным
+  // потоком становился «клик → 409 → попробуйте ещё раз»).
+  useRefetch(load, (event) => "dealId" in event && event.dealId === dealId);
 
   async function submit(documentId: string) {
     if (!dealId || !deal) return;
@@ -64,7 +71,21 @@ export function DocumentsPage() {
     }
   }
 
-  if (loadError) return <div className="field-error">{loadError}</div>;
+  // F4 (final review): ошибка загрузки — баннер НАД уже загруженными
+  // данными, а не вместо них. Разовый 503 во время фонового перезапроса
+  // (см. useRefetch) больше не заменяет весь экран красной надписью без
+  // возможности вернуться — только пока данных ещё вообще не было, экрану
+  // нечего показать под баннером.
+  if (loadError && !deal) {
+    return (
+      <div className="field-error" role="alert">
+        {loadError}{" "}
+        <button className="btn btn-ghost" onClick={load} style={{ marginLeft: 8 }}>
+          Повторить
+        </button>
+      </div>
+    );
+  }
   if (!deal) return <div style={{ color: "var(--text-muted)" }}>Загрузка…</div>;
 
   return (
@@ -72,7 +93,15 @@ export function DocumentsPage() {
       <h1 className="page-title">Документооборот · {deal.displayId}</h1>
       <p className="page-subtitle">Что нужно, зачем это нужно и на каком этапе находится каждый файл.</p>
 
-      {error && <div className="field-error" style={{ marginBottom: 12 }}>{error}</div>}
+      {loadError && (
+        <div className="field-error" role="alert" style={{ marginBottom: 12 }}>
+          {loadError}{" "}
+          <button className="btn btn-ghost" onClick={load} style={{ marginLeft: 8 }}>
+            Повторить
+          </button>
+        </div>
+      )}
+      {error && <div className="field-error" role="alert" style={{ marginBottom: 12 }}>{error}</div>}
 
       <div className="panel">
         {deal.documents.map((doc, i) => (

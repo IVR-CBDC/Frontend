@@ -6,16 +6,27 @@ import type {
   ScenarioCard,
   SettlementScenario,
 } from "../types/api";
-import { ApiError, isAuthError } from "./errors";
+import { ApiError } from "./errors";
 
 const BASE = "/api";
 
 // Единая точка, через которую client.ts сообщает "наверху" о том, что
-// сессия перестала быть валидной (BFF уже погасил cookie — см. README
-// «Контракт для SPA», коды TOKEN_EXPIRED/INVALID_TOKEN). AuthProvider
-// подписывается на это событие, чтобы перевести приложение в anonymous из
-// любого места, а не только из вызовов, которые сам AuthProvider делает
-// напрямую.
+// какой-то запрос получил 401. Дальше client.ts НЕ решает, что это значит —
+// решение зависит от контекста, которого у него нет (см. AuthProvider):
+//
+// - в доминирующем сценарии истечения сессии BFF ставит cookie с maxAge из
+//   exp токена, поэтому браузер стирает cookie раньше, чем апстрим успел бы
+//   отвергнуть токен сам — requireSession отвечает именно 401 UNAUTHORIZED,
+//   а не TOKEN_EXPIRED/INVALID_TOKEN (см. F1 финального ревью);
+// - тот же 401 UNAUTHORIZED — совершенно нормальный ответ на самый первый
+//   /auth/me никогда не заходившего посетителя;
+// - 401 INVALID_CREDENTIALS при логине — просто неверный пароль, а не
+//   истёкшая сессия.
+//
+// Единственное, что отличает "истекла" от "нормально не вошли" — текущий
+// AuthStatus в момент получения 401, а этот статус знает только
+// AuthProvider. Поэтому client.ts дисциплинированно шлёт событие на КАЖДЫЙ
+// 401, а AuthProvider решает, реагировать ли на него.
 export const authEvents = new EventTarget();
 export const SESSION_EXPIRED_EVENT = "session-expired";
 
@@ -72,10 +83,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       typeof body.code === "string" ? body.code : "UNKNOWN",
       typeof body.error === "string" ? body.error : `Ошибка запроса: ${res.status}`,
     );
-    // TOKEN_EXPIRED/INVALID_TOKEN/UNAUTHORIZED — cookie уже мертва (BFF её
-    // погасил), продолжать считать пользователя вошедшим нельзя ни для
-    // какого запроса, не только для тех, что делает сам AuthProvider.
-    if (isAuthError(err)) {
+    // Любой 401 — сигнал "наверх", решение принимает AuthProvider (см.
+    // комментарий у authEvents выше).
+    if (res.status === 401) {
       authEvents.dispatchEvent(new CustomEvent(SESSION_EXPIRED_EVENT));
     }
     throw err;

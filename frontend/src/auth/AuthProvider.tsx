@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { api, authEvents, SESSION_EXPIRED_EVENT, type Company, type LoginInput, type RegisterInput } from "../api/client";
 
 export type AuthStatus = "loading" | "authenticated" | "anonymous";
@@ -24,6 +24,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<AuthStatus>("loading");
   const [user, setUser] = useState<AuthUser | null>(null);
   const [company, setCompany] = useState<Company | null>(null);
+  // Обработчику session-expired нужен АКТУАЛЬНЫЙ статус в момент события, а
+  // не тот, что был на момент подписки — ref, а не замыкание на state.
+  const statusRef = useRef(status);
+  statusRef.current = status;
 
   const clearSession = useCallback(() => {
     setUser(null);
@@ -57,12 +61,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, [loadProfile, clearSession]);
 
-  // Любой запрос где-либо в приложении, получивший 401
-  // TOKEN_EXPIRED/INVALID_TOKEN/UNAUTHORIZED, сигналит через этот event bus
-  // (см. api/client.ts) — BFF уже погасил cookie, нам остаётся только
-  // перевести состояние в anonymous.
+  // Любой запрос где-либо в приложении, получивший 401 (любой код — см.
+  // api/client.ts), сигналит через этот event bus. Реагируем по текущему
+  // статусу (F1, final review — раньше решение принимал client.ts по code,
+  // а доминирующий в проде код истечения сессии — как раз UNAUTHORIZED):
+  //
+  // - status === "loading": это стартовый /auth/me непонятно ещё вошедшего
+  //   пользователя — его собственный catch в эффекте ниже и так вызовет
+  //   clearSession, реагировать здесь ещё раз не нужно (и не вредно, но
+  //   избыточно);
+  // - status === "authenticated": единственный случай, когда 401 значит
+  //   "сессия была, но перестала быть валидной" — cookie уже мертва на
+  //   стороне BFF, остаётся перевести приложение в anonymous;
+  // - status === "anonymous": 401 при логине/регистрации — обычная бизнес-
+  //   ошибка (неверный пароль и т.п.), её показывает форма через
+  //   messageFor, а не этот механизм.
   useEffect(() => {
-    const onSessionExpired = () => clearSession();
+    const onSessionExpired = () => {
+      if (statusRef.current === "authenticated") clearSession();
+    };
     authEvents.addEventListener(SESSION_EXPIRED_EVENT, onSessionExpired);
     return () => authEvents.removeEventListener(SESSION_EXPIRED_EVENT, onSessionExpired);
   }, [clearSession]);

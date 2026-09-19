@@ -11,6 +11,10 @@ export function DashboardPage() {
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(() => {
+    // F4 (final review): сброс на каждую попытку — иначе один случайный
+    // 503 во время фонового перезапроса (см. useRefetch) навсегда остаётся
+    // висеть, даже когда следующий перезапрос уже прошёл успешно.
+    setError(null);
     api
       .getDashboard()
       .then((data) => setDeals(data.deals))
@@ -33,8 +37,15 @@ export function DashboardPage() {
       </p>
 
       {error && (
-        <div className="panel" style={{ padding: 16, borderColor: "var(--red-600)", marginBottom: 20 }}>
-          Не удалось загрузить данные: {error}. Убедитесь, что запущен BFF (npm run dev в папке backend).
+        <div className="panel" role="alert" style={{ padding: 16, borderColor: "var(--red-600)", marginBottom: 20 }}>
+          {/* F8 (final review): инструкция разработчика ("npm run dev в
+              папке backend") уезжала в продакшн-образ и вдобавок была
+              неверной (папка bff, команда pnpm dev) — обычному пользователю
+              это ничем не поможет. */}
+          Не удалось загрузить данные: {error}
+          <button className="btn btn-ghost" onClick={load} style={{ marginLeft: 12 }}>
+            Повторить
+          </button>
         </div>
       )}
 

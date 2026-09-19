@@ -3,9 +3,21 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DocumentsPage } from "./DocumentsPage";
+import { WsProvider } from "../../hooks/WsProvider";
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+}
+
+// jsdom не реализует WebSocket — этому файлу не важно поведение сокета, но
+// WsProvider его открывает при монтировании (DocumentsPage теперь под
+// useRefetch, F2), поэтому нужна хотя бы заглушка, иначе new WebSocket(...)
+// падает с ReferenceError.
+class FakeWebSocket {
+  onmessage: ((event: { data: string }) => void) | null = null;
+  onclose: ((event: { code: number }) => void) | null = null;
+  onerror: (() => void) | null = null;
+  close() {}
 }
 
 function deal(documents: unknown[], version = 2) {
@@ -32,9 +44,11 @@ function deal(documents: unknown[], version = 2) {
 function renderPage() {
   return render(
     <MemoryRouter initialEntries={["/deals/d1/documents"]}>
-      <Routes>
-        <Route path="/deals/:dealId/documents" element={<DocumentsPage />} />
-      </Routes>
+      <WsProvider>
+        <Routes>
+          <Route path="/deals/:dealId/documents" element={<DocumentsPage />} />
+        </Routes>
+      </WsProvider>
     </MemoryRouter>,
   );
 }
@@ -45,6 +59,7 @@ describe("DocumentsPage", () => {
   beforeEach(() => {
     fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("WebSocket", FakeWebSocket as unknown as typeof WebSocket);
   });
 
   afterEach(() => {
