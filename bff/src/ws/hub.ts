@@ -263,11 +263,17 @@ function handlePMessage(_pattern: string, channel: string, message: string): voi
   }
 }
 
-// Поднимает WS-хаб на уже созданном HTTP-сервере: апгрейд принимается всегда
-// (это уровень протокола ws), а проверка сессии происходит сразу после —
-// невалидный/отсутствующий клиент закрывается кодом 4401 (диапазон 4000-4999
-// зарезервирован под собственные коды приложения, отправить его можно только
-// после успешного handshake, поэтому не раньше события "connection").
+// Поднимает WS-хаб на уже созданном HTTP-сервере: недопустимый Origin
+// отклоняется ДО завершения handshake (verifyClient ниже — сервер сам
+// пишет HTTP-ответ 403 и рвёт сокет, апгрейд до 101 не доходит вовсе), а
+// проверка сессии — уже после успешного апгрейда: невалидный/отсутствующий
+// клиент закрывается кодом 4401 (диапазон 4000-4999 зарезервирован под
+// собственные коды приложения, отправить его можно только после успешного
+// handshake, поэтому не раньше события "connection" — в отличие от Origin,
+// у сессии нет более раннего места для проверки, потому что cookie парсится
+// из того же request, который verifyClient уже видел бы, но верить в целую
+// куку — не структурная проверка уровня "с этой страницы вообще можно
+// открывать сокет").
 export async function initWebSocketHub(server: HttpServer, deps: WsHubDeps): Promise<void> {
   // F12 (final review): раньше повторный вызов (без closeWebSocketHub
   // между ними) тихо навешивал второй "pmessage"-листенер на нового
@@ -278,25 +284,37 @@ export async function initWebSocketHub(server: HttpServer, deps: WsHubDeps): Pro
     await closeWebSocketHub();
   }
 
-  wss = new WebSocketServer({ server, path: "/ws" });
+  wss = new WebSocketServer({
+    server,
+    path: "/ws",
+    // F2 (final review, round 2): проверка Origin в обработчике "connection"
+    // запускалась ПОСЛЕ того, как ws уже отправил 101 Switching Protocols —
+    // хендшейк успевал завершиться, и только потом сокет закрывался 4403.
+    // Страница с чужого origin всё равно получала открытый сокет на
+    // мгновение — ровно то "accept first, close later", что и было
+    // дырой. verifyClient вызывается ДО апгрейда: если callback(false, ...),
+    // ws сам пишет HTTP-ответ с заданным статусом и рвёт TCP-соединение —
+    // хендшейк до 101 не доходит вовсе, клиент никогда не получает "open".
+    verifyClient(info, callback) {
+      const origin = info.origin;
+      if (!origin || !deps.allowedOrigins.includes(origin)) {
+        callback(false, 403, "Недопустимый источник");
+        return;
+      }
+      callback(true);
+    },
+  });
   redisSubscriber = deps.redis;
 
   redisSubscriber.on("pmessage", handlePMessage);
 
   wss.on("connection", (socket: WebSocket, request: IncomingMessage) => {
-    // F2 (final review): проверяем Origin ДО cookie/токена и отдельным
-    // кодом (4403, а не 4401) — это структурная проверка "с этой страницы
-    // вообще можно открывать сокет", а не "эта сессия недействительна".
-    // Апгрейд принимается на уровне протокола ws раньше (см. комментарий
-    // над initWebSocketHub), поэтому закрыть с прикладным кодом можно
-    // только здесь, после события "connection" — так же, как уже сделано
-    // для 4401.
-    const origin = request.headers.origin;
-    if (!origin || !deps.allowedOrigins.includes(origin)) {
-      socket.close(4403, "Недопустимый источник");
-      return;
-    }
-
+    // Origin уже проверен в verifyClient выше — до этой точки долетают
+    // только запросы с разрешённым Origin. Ниже — проверка сессии, у
+    // которой (в отличие от Origin) нет более раннего места: cookie не
+    // структурная характеристика запроса, а состояние, действительность
+    // которого решает verifyToken() асинхронно, поэтому закрыть 4401 можно
+    // только после того, как сокет уже открыт.
     const token = parseSessionCookie(request.headers.cookie);
     if (!token) {
       socket.close(4401, "Требуется авторизация");

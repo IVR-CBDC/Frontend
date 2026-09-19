@@ -149,33 +149,68 @@ afterEach(async () => {
   await new Promise<void>((resolve) => server.close(() => resolve()));
 });
 
+// Ждёт либо "open" (хендшейк состоялся), либо "unexpected-response" (сервер
+// ответил НЕ 101 — HTTP-ответ с кодом статуса вместо апгрейда, verifyClient
+// отклонил ДО хендшейка) — ровно то различие, которое доказывает или
+// опровергает "accept first, close later". Если бы сервер сначала принимал
+// апгрейд, а потом закрывал сокет прикладным кодом (старая, дырявая
+// реализация), здесь сработал бы "open", а не "unexpected-response".
+function waitForHandshakeOutcome(
+  socket: WebSocket,
+): Promise<{ outcome: "open" } | { outcome: "unexpected-response"; statusCode: number | undefined }> {
+  return new Promise((resolve, reject) => {
+    socket.once("open", () => resolve({ outcome: "open" }));
+    socket.once("unexpected-response", (_req, res) => resolve({ outcome: "unexpected-response", statusCode: res.statusCode }));
+    socket.once("error", reject);
+  });
+}
+
 describe("initWebSocketHub", () => {
-  // F2 (final review): живая проверка ревьюера — Origin: http://evil.com
-  // получал 101 Switching Protocols, потому что WS-рукопожатие не
-  // проверялось нигде. Рядом с существующими тестами на 4401 (см. ниже),
-  // но отдельным кодом (4403), чтобы SPA могло отличить "чужой источник"
-  // от "истёкшая/отсутствующая сессия".
-  it("сокет с недопустимым Origin закрывается кодом 4403 и не получает событий, даже с валидным токеном", async () => {
+  // F2 (final review, round 2): реви на первый заход показал, что проверка
+  // Origin в обработчике "connection" срабатывала ПОСЛЕ того, как ws уже
+  // отправил 101 Switching Protocols — хендшейк успевал завершиться, и
+  // страница с чужого origin на мгновение получала открытый сокет (accept
+  // first, close later — ровно то, что финдинг называл дисквалифицирующим).
+  // Тест ниже различает это: он проверяет не "в конце концов пришёл код
+  // 4403", а что хендшейк вообще НЕ состоялся (событие "open" не должно
+  // произойти никогда) — против старой реализации (verifyClient отсутствует,
+  // проверка в "connection") этот тест обязан упасть, потому что там "open"
+  // происходит всегда, до применения самой проверки.
+  it("недопустимый Origin отклоняется НА HTTP-апгрейде (403), хендшейк не завершается, событие open не происходит", async () => {
     await startHub();
     const socket = connect("session=token-company-a", "http://evil.com");
-    await waitForOpen(socket);
     const { events } = collectDealEvents(socket);
 
-    const closeInfo = await waitForClose(socket);
-    expect(closeInfo.code).toBe(4403);
+    const result = await waitForHandshakeOutcome(socket);
+    expect(result.outcome).toBe("unexpected-response");
+    if (result.outcome === "unexpected-response") {
+      expect(result.statusCode).toBe(403);
+    }
 
     publish("deal-events:company-a", { type: "deal.created", seq: 1, deal_id: "d1", at: "2026-01-01T00:00:00Z" });
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(events).toHaveLength(0);
   });
 
-  it("сокет вовсе без заголовка Origin закрывается кодом 4403", async () => {
+  it("запрос вовсе без заголовка Origin тоже отклоняется на HTTP-апгрейде (403), а не открывается", async () => {
     await startHub();
     const socket = connect("session=token-company-a", null);
-    await waitForOpen(socket);
 
-    const closeInfo = await waitForClose(socket);
-    expect(closeInfo.code).toBe(4403);
+    const result = await waitForHandshakeOutcome(socket);
+    expect(result.outcome).toBe("unexpected-response");
+    if (result.outcome === "unexpected-response") {
+      expect(result.statusCode).toBe(403);
+    }
+  });
+
+  // Допустимый Origin по-прежнему нормально завершает хендшейк — регрессия
+  // на "слишком строго" не менее опасна, чем дыра.
+  it("допустимый Origin по-прежнему успешно проходит хендшейк (open, не unexpected-response)", async () => {
+    await startHub();
+    const socket = connect("session=token-company-a"); // ALLOWED_ORIGIN по умолчанию
+
+    const result = await waitForHandshakeOutcome(socket);
+    expect(result.outcome).toBe("open");
   });
 
   it("сокет без валидной cookie закрывается кодом 4401 и не получает событий", async () => {
