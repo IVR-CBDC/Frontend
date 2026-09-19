@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../../api/client";
 import { ApiError, messageFor } from "../../api/errors";
 import type { NotificationItem } from "../../types/api";
@@ -22,6 +22,32 @@ interface Props {
 export function NotificationsDrawer({ open, onClose, refreshKey, onRead }: Props) {
   const [items, setItems] = useState<NotificationItem[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const previouslyFocusedRef = useRef<HTMLElement | null>(null);
+
+  // F14 (final review): модальный ящик без перевода фокуса и без Escape —
+  // фокус клавиатуры/скринридера оставался на кнопке "Уведомления" под
+  // ящиком, а закрыть можно было только мышью. При открытии запоминаем, что
+  // было в фокусе, и переводим его на кнопку "Закрыть"; при закрытии
+  // возвращаем фокус туда, откуда пришли.
+  useEffect(() => {
+    if (open) {
+      previouslyFocusedRef.current = document.activeElement as HTMLElement | null;
+      closeButtonRef.current?.focus();
+    } else {
+      previouslyFocusedRef.current?.focus();
+      previouslyFocusedRef.current = null;
+    }
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [open, onClose]);
 
   // F7 (final review): раньше getNotifications вызывался вообще без
   // .catch — при неудаче ящик молча оставался с пустым items и показывал
@@ -69,11 +95,12 @@ export function NotificationsDrawer({ open, onClose, refreshKey, onRead }: Props
         flexDirection: "column",
       }}
       role="dialog"
+      aria-modal="true"
       aria-label="Уведомления"
     >
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: 18, borderBottom: "1px solid var(--line)" }}>
         <strong>Уведомления</strong>
-        <button className="btn btn-ghost" onClick={onClose} aria-label="Закрыть">✕</button>
+        <button ref={closeButtonRef} className="btn btn-ghost" onClick={onClose} aria-label="Закрыть">✕</button>
       </div>
 
       <div style={{ overflowY: "auto", flex: 1 }}>

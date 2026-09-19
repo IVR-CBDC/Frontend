@@ -98,7 +98,11 @@ describe("DocumentsPage", () => {
     renderPage();
 
     await screen.findByText("Инвойс");
-    expect(screen.getAllByRole("button", { name: "Отправить на проверку" })).toHaveLength(2);
+    // F13 (final review): имя кнопки теперь включает документ, иначе
+    // getByRole по одинаковому "Отправить на проверку" неоднозначен на
+    // экране с несколькими строками.
+    expect(screen.getByRole("button", { name: "Отправить на проверку: Инвойс" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Отправить на проверку: Контракт" })).toBeInTheDocument();
   });
 
   it("у отклонённого документа видна rejectReason", async () => {
@@ -124,7 +128,7 @@ describe("DocumentsPage", () => {
     const user = userEvent.setup();
     renderPage();
 
-    await user.click(await screen.findByRole("button", { name: "Отправить на проверку" }));
+    await user.click(await screen.findByRole("button", { name: "Отправить на проверку: Инвойс" }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
       "/api/deals/d1/documents/doc1/submit",
@@ -133,5 +137,19 @@ describe("DocumentsPage", () => {
     const call = fetchMock.mock.calls.find(([url]) => (url as string).endsWith("/submit"));
     const body = JSON.parse((call?.[1] as RequestInit).body as string);
     expect(body).toEqual({ version: 7 });
+  });
+
+  // F13 (final review): зацепки для будущих e2e-тестов (план 07) — сейчас
+  // в коде нет ни одного data-testid.
+  it("строка документа несёт data-testid и data-doc-kind", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(200, {
+        deal: deal([{ id: "doc1", kind: "invoice", name: "Инвойс", purpose: "п1", status: "missing" }]),
+      }),
+    );
+    renderPage();
+
+    const row = await screen.findByTestId("document-row");
+    expect(row).toHaveAttribute("data-doc-kind", "invoice");
   });
 });

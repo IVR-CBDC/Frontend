@@ -127,7 +127,7 @@ export function ScenarioPage() {
         Сравните сроки, стоимость и ограничения — решение стоит принять осознанно, а не по умолчанию.
       </p>
 
-      {loadError && <div className="field-error" style={{ marginBottom: 12 }}>{loadError}</div>}
+      {loadError && <div className="field-error" role="alert" style={{ marginBottom: 12 }}>{loadError}</div>}
       {!scenarios && !loadError && <div style={{ color: "var(--text-muted)" }}>Загрузка вариантов…</div>}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 14, marginBottom: 22 }}>
@@ -187,7 +187,7 @@ export function ScenarioPage() {
         })}
       </div>
 
-      {error && <div className="field-error" style={{ marginBottom: 12 }}>{error}</div>}
+      {error && <div className="field-error" role="alert" style={{ marginBottom: 12 }}>{error}</div>}
 
       <button className="btn btn-primary" onClick={confirm} disabled={!selected || submitting || dealVersion === null}>
         {submitting ? "Сохраняем…" : "Подтвердить сценарий"}

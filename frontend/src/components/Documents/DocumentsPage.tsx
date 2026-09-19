@@ -107,6 +107,8 @@ export function DocumentsPage() {
         {deal.documents.map((doc, i) => (
           <div
             key={doc.id}
+            data-testid="document-row"
+            data-doc-kind={doc.kind}
             style={{
               display: "flex",
               alignItems: "center",
@@ -137,6 +139,11 @@ export function DocumentsPage() {
                   className="btn btn-secondary"
                   onClick={() => submit(doc.id)}
                   disabled={busyDocId === doc.id}
+                  // F13 (final review): с одинаковым текстом на нескольких
+                  // строк getByRole("button", {name: "Отправить на
+                  // проверку"}) неоднозначен по построению — имя включает
+                  // документ.
+                  aria-label={`Отправить на проверку: ${doc.name}`}
                 >
                   {busyDocId === doc.id ? "Отправляем…" : "Отправить на проверку"}
                 </button>

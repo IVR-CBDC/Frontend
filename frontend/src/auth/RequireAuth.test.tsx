@@ -58,4 +58,22 @@ describe("RequireAuth", () => {
 
     await waitFor(() => expect(screen.getByText("Защищённый трекинг")).toBeInTheDocument());
   });
+
+  // F13 (final review): раньше при loading рендерился null — странице
+  // нечего было ждать в e2e. data-app-status держит текущий статус на одном
+  // узле во всех трёх состояниях.
+  it("data-app-status отражает переход loading → authenticated", async () => {
+    let resolveMe!: (v: Response) => void;
+    fetchMock.mockReturnValue(new Promise((resolve) => (resolveMe = resolve)));
+
+    renderApp("/deals/42/tracking");
+
+    expect(document.querySelector('[data-app-status="loading"]')).toBeInTheDocument();
+
+    resolveMe(
+      jsonResponse(200, { user_id: "u1", login: "ivan", name: "Иван", company: { id: "c1", name: "ООО Ромашка", inn: "1234567890" } }),
+    );
+
+    await waitFor(() => expect(document.querySelector('[data-app-status="authenticated"]')).toBeInTheDocument());
+  });
 });

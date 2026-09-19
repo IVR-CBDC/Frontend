@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NotificationsDrawer } from "./NotificationsDrawer";
@@ -84,5 +84,39 @@ describe("NotificationsDrawer", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Сервис временно недоступен, попробуйте позже");
     expect(screen.queryByText("Пока пусто.")).not.toBeInTheDocument();
+  });
+
+  // F14 (final review): ящик — модальный диалог без перевода фокуса и без
+  // Escape. Проверяем: aria-modal, фокус на "Закрыть" при открытии, Escape
+  // зовёт onClose, фокус возвращается туда, откуда пришёл, при закрытии.
+  it("модальность: aria-modal, фокус на Закрыть при открытии, Escape закрывает, фокус возвращается", async () => {
+    fetchMock.mockResolvedValue(jsonResponse(200, { notifications: [], unread: 0 }));
+    const onClose = vi.fn();
+
+    function Harness({ open }: { open: boolean }) {
+      return (
+        <div>
+          <button>Открыть уведомления</button>
+          <NotificationsDrawer open={open} onClose={onClose} refreshKey={0} />
+        </div>
+      );
+    }
+
+    const { rerender } = render(<Harness open={false} />);
+    const trigger = screen.getByRole("button", { name: "Открыть уведомления" });
+    trigger.focus();
+    expect(trigger).toHaveFocus();
+
+    rerender(<Harness open />);
+
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveAttribute("aria-modal", "true");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Закрыть" })).toHaveFocus());
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+
+    rerender(<Harness open={false} />);
+    await waitFor(() => expect(trigger).toHaveFocus());
   });
 });

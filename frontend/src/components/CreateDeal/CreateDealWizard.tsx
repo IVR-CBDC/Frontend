@@ -134,6 +134,9 @@ export function CreateDealWizard() {
           <li
             key={label}
             className="mono"
+            // F13 (final review): шаг раньше был обозначен только цветом —
+            // и недоступность, и зацепка для e2e (план 07).
+            aria-current={i === step ? "step" : undefined}
             style={{
               fontSize: 11.5,
               padding: "5px 10px",
