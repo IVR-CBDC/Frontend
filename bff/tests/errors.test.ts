@@ -3,6 +3,8 @@ import express from "express";
 import request from "supertest";
 import { ApiError, installErrorHandler } from "../src/errors.js";
 import { callUpstream } from "../src/upstream/http.js";
+import { createApp } from "../src/app.js";
+import { testConfig } from "./helpers/config.js";
 
 describe("installErrorHandler", () => {
   it("превращает ApiError в тело {code, error} с его статусом", async () => {
@@ -28,6 +30,21 @@ describe("installErrorHandler", () => {
     expect(response.body.code).toBe("NOT_FOUND");
   });
 
+  // F4 (final review): проверено вживую — GET /api/nope без cookie отвечал
+  // 401 UNAUTHORIZED, а не 404, потому что requireSession раньше висел на
+  // dealsRouter.use(...) и перехватывал ЛЮБОЙ /api/* путь (роутер
+  // смонтирован на "/api" целиком) раньше, чем запрос мог дойти до
+  // финального 404. По спеке §7 SPA на 401 уходит на логин — опечатка в
+  // URL выглядела бы как "вас разлогинило".
+  it("неизвестный путь ПОД /api тоже отвечает 404, а не 401 (requireSession не перехватывает его)", async () => {
+    const app = createApp(testConfig());
+
+    const response = await request(app).get("/api/nope");
+
+    expect(response.status).toBe(404);
+    expect(response.body.code).toBe("NOT_FOUND");
+  });
+
   it("отвечает 500 {code: INTERNAL_ERROR} и не отдаёт текст исключения наружу", async () => {
     const app = express();
     app.get("/boom", () => {
@@ -40,6 +57,24 @@ describe("installErrorHandler", () => {
     expect(response.status).toBe(500);
     expect(response.body.code).toBe("INTERNAL_ERROR");
     expect(JSON.stringify(response.body)).not.toContain("секрет из стектрейса");
+  });
+});
+
+describe("битое тело запроса", () => {
+  // F3 (final review): проверено вживую — POST /api/auth/login с {bad
+  // отвечал 500 INTERNAL_ERROR вместо 400. express.json() бросает
+  // SyntaxError со status: 400 сам, но обработчик ошибок его не узнавал.
+  it("невалидный JSON в теле POST /api/auth/login отвечает 400 VALIDATION_ERROR, а не 500", async () => {
+    const app = createApp(testConfig());
+
+    const response = await request(app)
+      .post("/api/auth/login")
+      .set("Origin", "http://localhost:5173")
+      .set("Content-Type", "application/json")
+      .send("{bad");
+
+    expect(response.status).toBe(400);
+    expect(response.body.code).toBe("VALIDATION_ERROR");
   });
 });
 

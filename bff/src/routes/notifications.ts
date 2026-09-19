@@ -22,9 +22,12 @@ function toNotificationItem(notification: CoreNotification): NotificationItem {
 
 export const notificationsRouter = Router();
 
-notificationsRouter.use(requireSession);
+// F4 (final review): см. тот же комментарий в routes/deals.ts —
+// requireSession навешивается на конкретные маршруты, а не на весь
+// роутер через .use(), иначе он перехватывает и несуществующие /api/*
+// пути раньше финального 404.
 
-notificationsRouter.get("/notifications", async (req, res, next) => {
+notificationsRouter.get("/notifications", requireSession, async (req, res, next) => {
   try {
     const config = getConfig(req);
     const token = readToken(req) as string;
@@ -36,7 +39,7 @@ notificationsRouter.get("/notifications", async (req, res, next) => {
   }
 });
 
-notificationsRouter.post("/notifications/:id/read", async (req, res, next) => {
+notificationsRouter.post("/notifications/:id/read", requireSession, async (req, res, next) => {
   try {
     const config = getConfig(req);
     const token = readToken(req) as string;

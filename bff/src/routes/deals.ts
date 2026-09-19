@@ -123,11 +123,17 @@ function corridorParams(deal: CoreDeal): { from_country: string; to_country: str
 
 export const dealsRouter = Router();
 
-dealsRouter.use(requireSession);
+// F4 (final review): requireSession раньше висел на всём роутере через
+// dealsRouter.use(requireSession) — а роутер смонтирован в app.ts на
+// "/api" целиком, поэтому requireSession срабатывал на ЛЮБОЙ /api/* путь,
+// включая несуществующие (GET /api/nope без cookie отвечал 401, а не
+// доходил до финального 404). requireSession навешивается на каждый
+// маршрут отдельно — так несуществующие пути проваливаются мимо него к
+// installErrorHandler().
 
 // ---- Экран 1: Дашборд -------------------------------------------------
 
-dealsRouter.get("/dashboard", async (req, res, next) => {
+dealsRouter.get("/dashboard", requireSession, async (req, res, next) => {
   try {
     const config = getConfig(req);
     const token = readToken(req) as string;
@@ -154,7 +160,7 @@ dealsRouter.get("/dashboard", async (req, res, next) => {
 
 // ---- Экран 2: Список / создание сделки ------------------------------------
 
-dealsRouter.get("/deals", async (req, res, next) => {
+dealsRouter.get("/deals", requireSession, async (req, res, next) => {
   try {
     const config = getConfig(req);
     const token = readToken(req) as string;
@@ -166,7 +172,7 @@ dealsRouter.get("/deals", async (req, res, next) => {
   }
 });
 
-dealsRouter.post("/deals", async (req, res, next) => {
+dealsRouter.post("/deals", requireSession, async (req, res, next) => {
   try {
     const config = getConfig(req);
     const token = readToken(req) as string;
@@ -184,7 +190,7 @@ dealsRouter.post("/deals", async (req, res, next) => {
   }
 });
 
-dealsRouter.get("/deals/:id", async (req, res, next) => {
+dealsRouter.get("/deals/:id", requireSession, async (req, res, next) => {
   try {
     const config = getConfig(req);
     const token = readToken(req) as string;
@@ -197,7 +203,7 @@ dealsRouter.get("/deals/:id", async (req, res, next) => {
 
 // ---- Экран 3: Выбор сценария расчёта --------------------------------------
 
-dealsRouter.get("/deals/:id/scenarios", async (req, res, next) => {
+dealsRouter.get("/deals/:id/scenarios", requireSession, async (req, res, next) => {
   try {
     const config = getConfig(req);
     const token = readToken(req) as string;
@@ -231,7 +237,7 @@ dealsRouter.get("/deals/:id/scenarios", async (req, res, next) => {
   }
 });
 
-dealsRouter.post("/deals/:id/scenario", async (req, res, next) => {
+dealsRouter.post("/deals/:id/scenario", requireSession, async (req, res, next) => {
   try {
     const config = getConfig(req);
     const token = readToken(req) as string;
@@ -248,7 +254,7 @@ dealsRouter.post("/deals/:id/scenario", async (req, res, next) => {
 
 // ---- Экран 4: Документы ----------------------------------------------
 
-dealsRouter.post("/deals/:dealId/documents/:documentId/submit", async (req, res, next) => {
+dealsRouter.post("/deals/:dealId/documents/:documentId/submit", requireSession, async (req, res, next) => {
   try {
     const config = getConfig(req);
     const token = readToken(req) as string;
@@ -270,7 +276,7 @@ dealsRouter.post("/deals/:dealId/documents/:documentId/submit", async (req, res,
 // Таймлайн и причина блокировки уже есть в полной сделке — отдельного
 // запроса к core, кроме getDeal, не делаем.
 
-dealsRouter.get("/deals/:id/tracking", async (req, res, next) => {
+dealsRouter.get("/deals/:id/tracking", requireSession, async (req, res, next) => {
   try {
     const config = getConfig(req);
     const token = readToken(req) as string;
