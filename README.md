@@ -4,6 +4,13 @@
 от начала до завершения: финансовая сторона, документооборот, регуляторные
 проверки, статус исполнения.
 
+Этот репозиторий (`IVR-CBDC/Frontend`) — фронтенд-часть системы: BFF (Node.js)
+и SPA (React). Бэкенд — отдельный репозиторий (`IVR-CBDC/Backend`, локально
+`/home/legors/Documents/IVR`): три сервиса на C++/Drogon и Python/FastAPI за
+Traefik, каждый со своей Postgres, плюс общий Redis. BFF — единственная дверь
+из SPA в этот бэкенд: держит сессию пользователя в HttpOnly-cookie, ходит в
+сервисы с его JWT и раздаёт события сделок через WebSocket.
+
 ## Структура репозитория
 
 ```
@@ -15,31 +22,66 @@ alfa-cbdc-hub/
 ## BFF
 
 Агрегирует данные, реализует бизнес-логику для UI, кеширование и сервис
-уведомлений в реальном времени через WebSocket.
+уведомлений в реальном времени через WebSocket. Реализация — поверх реальных
+сервисов Backend-репозитория (auth/core/commission), моков не осталось.
+
+### Локальный запуск против стенда Backend
+
+Сначала подними стенд Backend (`docker compose ... up -d --wait`, см. README
+того репозитория) — BFF ничего не эмулирует и падает при старте, если не
+может достучаться до обязательных переменных окружения:
 
 ```bash
 cd bff
 pnpm install
+AUTH_URL=http://127.0.0.1:18080 \
+CORE_URL=http://127.0.0.1:18081 \
+COMMISSION_URL=http://127.0.0.1:<host-порт commission, если он проброшен> \
+REDIS_URL=redis://127.0.0.1:<host-порт redis, если он проброшен> \
+ALLOWED_ORIGINS=http://localhost:5173 \
 pnpm dev         # http://localhost:4000, WS: ws://localhost:4000/ws
-pnpm test        # vitest
-pnpm typecheck
 ```
 
-Основные REST-эндпоинты (контракт, к которому идёт реализация):
+`service-commission` и `redis` в dev-оверлее Backend порт наружу не
+публикуют (см. README Backend-репозитория) — если он нужен с хоста, это
+отдельная правка того репозитория, не этой задачи. Внутри общего
+docker-сетевого стенда (см. ниже, Task 5 плана 05) BFF обращается к ним по
+именам сервисов (`http://service-commission:8000`, `redis://redis:6379`),
+не по host-портам.
 
-| Метод | Путь | Экран |
-|---|---|---|
-| GET | `/api/dashboard` | 1. Главная — сводка по сделкам |
-| GET | `/api/notifications` | Уведомления |
-| POST | `/api/deals` | 2. Создание сделки (мастер) |
-| GET | `/api/scenarios` | 3. Выбор сценария расчёта |
-| POST | `/api/deals/:id/scenario` | 3. Подтверждение сценария |
-| PATCH | `/api/deals/:dealId/documents/:documentId` | 4. Документооборот |
-| GET | `/api/deals/:id/tracking` | 5. Трекинг сделки |
+Обязательные переменные (без них процесс падает при старте с понятным
+сообщением, см. `bff/src/config.ts`):
 
-Моковые данные удалены: сейчас каждый из этих маршрутов отвечает
-`501 NOT_IMPLEMENTED` (см. `bff/src/routes/deals.ts`) — реальную реализацию
-поверх сервисов бэкенда добавляет отдельная задача (Task 3 плана 05).
+| Переменная | Назначение |
+|---|---|
+| `AUTH_URL` | адрес service-auth (регистрация/логин/JWKS) |
+| `CORE_URL` | адрес service-core (сделки, документы, трекинг) |
+| `COMMISSION_URL` | адрес service-commission (котировки сценариев) |
+| `REDIS_URL` | адрес Redis (подписка на события сделок) |
+| `ALLOWED_ORIGINS` | список Origin через запятую — проверка CSRF на мутирующих запросах |
+
+Необязательные: `PORT` (по умолчанию 4000), `COOKIE_SECURE` (`true`/`false`,
+по умолчанию `false` — включай в проде за HTTPS), `UPSTREAM_TIMEOUT_MS`
+(по умолчанию 5000).
+
+```bash
+pnpm test        # vitest, без поднятого стенда — upstream'ы подменены
+pnpm typecheck
+pnpm build       # -> bff/dist
+```
+
+### Продовый образ
+
+```bash
+docker build -t bff:local -f bff/Dockerfile bff
+```
+
+Многостадийная сборка (`node:22-alpine`): зависимости → `tsc` → рантайм
+только с `dist/`, прод-зависимостями и непривилегированным пользователем.
+`HEALTHCHECK` в образе не задан — он определяется в compose Backend-репозитория
+(так принято в этом стенде, см. `docker-compose.yml` там же), который умеет
+поднимать `bff` либо из готового образа, либо собрать его отсюда через
+`docker-compose.override.yml.example`.
 
 ## Frontend (SPA)
 
