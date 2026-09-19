@@ -20,16 +20,25 @@ function requireEnv(name: string): string {
 
 // Разбирает переменные окружения в конфиг BFF и падает с понятным сообщением
 // при старте, если не заданы переменные, без которых сервис не может
-// безопасно работать: адрес service-auth (нужен уже в этой задаче — маршруты
-// /api/auth/*) и список разрешённых Origin (без него checkOrigin не сможет
-// решить, что пропускать, и cookie-сессия будет незащищённой).
+// безопасно работать: адрес service-auth (маршруты /api/auth/*), список
+// разрешённых Origin (без него checkOrigin не сможет решить, что пропускать,
+// и cookie-сессия будет незащищённой), а также адреса service-core и
+// service-commission — с Task 3 их читают реальные маршруты /api/deals/*,
+// /api/notifications/*.
 //
-// CORE_URL/COMMISSION_URL/REDIS_URL пока не используются ни одним
-// реализованным маршрутом (deals — заглушка 501 из задачи 1, реальные
-// маршруты появятся в задачах 3/5 этого плана), поэтому необязательны и по
-// умолчанию пустые строки — сервис не должен падать при старте без них.
+// CORE_URL/COMMISSION_URL раньше были необязательны и по умолчанию пустые —
+// это было безопасно, пока маршруты, которые их используют, были 501-заглушкой
+// из задачи 1. Теперь пустая строка вместо адреса привела бы к тому, что
+// fetch() внутри callUpstream бросает TypeError на невалидном относительном
+// URL — эта ошибка неотличима на выходе от "upstream недоступен" (обе
+// схлопываются в 503 UPSTREAM_UNAVAILABLE), и отсутствие переменной окружения
+// обнаружилось бы только при первом реальном запросе, а не при старте
+// процесса. requireEnv здесь превращает это в понятную ошибку сразу при
+// запуске, а не в неотличимый от сетевого сбоя 503 на первый живой запрос.
 export function loadConfig(): Config {
   const authUrl = requireEnv("AUTH_URL");
+  const coreUrl = requireEnv("CORE_URL");
+  const commissionUrl = requireEnv("COMMISSION_URL");
   const allowedOrigins = requireEnv("ALLOWED_ORIGINS")
     .split(",")
     .map((origin) => origin.trim())
@@ -42,8 +51,8 @@ export function loadConfig(): Config {
   return {
     port: Number(process.env.PORT) || 4000,
     authUrl,
-    coreUrl: process.env.CORE_URL ?? "",
-    commissionUrl: process.env.COMMISSION_URL ?? "",
+    coreUrl,
+    commissionUrl,
     redisUrl: process.env.REDIS_URL ?? "",
     cookieSecure: process.env.COOKIE_SECURE === "true",
     allowedOrigins,

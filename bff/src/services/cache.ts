@@ -1,11 +1,14 @@
 import NodeCache from "node-cache";
 
-// Central cache for the BFF layer. Aggregated read models (e.g. the dashboard
-// summary) are expensive to recompute on every request, so the BFF caches
-// them for a short TTL and invalidates on writes.
-export const bffCache = new NodeCache({ stdTTL: 15, checkperiod: 5 });
-
-export function invalidate(prefix: string): void {
-  const keys = bffCache.keys().filter((k) => k.startsWith(prefix));
-  bffCache.del(keys);
-}
+// Кеш BFF используется только для котировок сценариев расчёта (commission
+// quotes) — единственных агрегатов, для которых это оправдано: поход в
+// service-commission не бесплатен, а результат зависит только от параметров
+// сделки (страны, валюта, сумма), которые не меняются, пока не меняется сама
+// сделка. Дашборд намеренно НЕ кешируется (см. routes/deals.ts): при двух
+// репликах BFF локальный in-memory кеш разъедется между инстансами, а core
+// и так отдаёт список сделок одним запросом — кешировать нечего оптимизировать.
+//
+// Ключ кеша строится как `${dealId}:${dealVersion}` в месте вызова
+// (routes/deals.ts): при изменении сделки version меняется, старый ключ
+// перестаёт совпадать сам по себе — отдельная инвалидация по записи не нужна.
+export const quotesCache = new NodeCache({ stdTTL: 60, checkperiod: 30 });

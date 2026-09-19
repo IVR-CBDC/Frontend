@@ -24,6 +24,12 @@ export async function callUpstream<T>(url: string, init: RequestInit, timeoutMs:
   }
 
   if (response.ok) {
+    // 204 No Content (например, POST .../notifications/:id/read в
+    // service-core) не имеет тела — response.json() на пустом теле бросает
+    // SyntaxError. Вызывающая сторона в этом случае ожидает Promise<void>.
+    if (response.status === 204) {
+      return undefined as T;
+    }
     return (await response.json()) as T;
   }
 

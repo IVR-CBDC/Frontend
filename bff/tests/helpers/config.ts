@@ -9,8 +9,8 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
   return {
     port: 4000,
     authUrl: "http://auth.test",
-    coreUrl: "",
-    commissionUrl: "",
+    coreUrl: "http://core.test",
+    commissionUrl: "http://commission.test",
     redisUrl: "",
     cookieSecure: false,
     allowedOrigins: ["http://localhost:5173"],

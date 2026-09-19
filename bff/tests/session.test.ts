@@ -102,6 +102,38 @@ describe("session cookie", () => {
     expect(headers.Authorization).toBe(`Bearer ${token}`);
   });
 
+  it("токен без exp — 502, cookie не ставится (fail-closed)", async () => {
+    stubFetchOnce(200, {
+      user_id: "u1",
+      company_id: "c1",
+      token: new UnsecuredJWT({}).setIssuedAt().encode(), // без setExpirationTime -> нет exp
+    });
+    const app = createApp(testConfig());
+
+    const response = await request(app)
+      .post("/api/auth/login")
+      .set("Origin", "http://localhost:5173")
+      .send({ login: "a", password: "b" });
+
+    expect(response.status).toBe(502);
+    expect(response.body.code).toBe("UPSTREAM_UNAVAILABLE");
+    expect(response.headers["set-cookie"]).toBeUndefined();
+  });
+
+  it("токен с exp в прошлом — 502, cookie не ставится (fail-closed)", async () => {
+    stubFetchOnce(200, { user_id: "u1", company_id: "c1", token: tokenExpiringIn(-60) });
+    const app = createApp(testConfig());
+
+    const response = await request(app)
+      .post("/api/auth/login")
+      .set("Origin", "http://localhost:5173")
+      .send({ login: "a", password: "b" });
+
+    expect(response.status).toBe(502);
+    expect(response.body.code).toBe("UPSTREAM_UNAVAILABLE");
+    expect(response.headers["set-cookie"]).toBeUndefined();
+  });
+
   it("POST /api/auth/logout отвечает 204 и гасит cookie", async () => {
     const app = createApp(testConfig());
 
@@ -151,6 +183,17 @@ describe("checkOrigin", () => {
       .set("Origin", "http://localhost:5173");
 
     expect(response.status).toBe(204);
+  });
+
+  it("Origin проверяется точным совпадением, а не префиксом (localhost:5173.evil.com — чужой)", async () => {
+    const app = createApp(testConfig());
+
+    const response = await request(app)
+      .post("/api/auth/logout")
+      .set("Origin", "http://localhost:5173.evil.com");
+
+    expect(response.status).toBe(403);
+    expect(response.body.code).toBe("FORBIDDEN_ORIGIN");
   });
 
   it("GET с чужим Origin не блокируется", async () => {

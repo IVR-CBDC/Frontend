@@ -6,6 +6,7 @@ import { installErrorHandler } from "./errors.js";
 import { checkOrigin } from "./session.js";
 import { authRouter } from "./routes/auth.js";
 import { dealsRouter } from "./routes/deals.js";
+import { notificationsRouter } from "./routes/notifications.js";
 
 // Сборка express-приложения вынесена отдельно от index.ts, чтобы тесты могли
 // поднимать приложение без сокета и открытого порта (см. tests/*.test.ts).
@@ -31,6 +32,7 @@ export function createApp(config: Config): express.Express {
   app.get("/health", (_req, res) => res.json({ status: "ok" }));
   app.use("/api", authRouter);
   app.use("/api", dealsRouter);
+  app.use("/api", notificationsRouter);
 
   installErrorHandler(app);
 
