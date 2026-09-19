@@ -4,6 +4,7 @@ import { readToken, requireSession } from "../session.js";
 import * as coreUpstream from "../upstream/core.js";
 import type { CoreNotification } from "../upstream/core.js";
 import type { NotificationItem } from "../types.js";
+import { parseLimit } from "../validation.js";
 
 function getConfig(req: Request): Config {
   return req.app.get("config") as Config;
@@ -31,7 +32,7 @@ notificationsRouter.get("/notifications", requireSession, async (req, res, next)
   try {
     const config = getConfig(req);
     const token = readToken(req) as string;
-    const limit = req.query.limit !== undefined ? Number(req.query.limit) : undefined;
+    const limit = parseLimit(req.query.limit);
     const { items, unread } = await coreUpstream.listNotifications(config, token, limit);
     res.json({ notifications: items.map(toNotificationItem), unread });
   } catch (err) {

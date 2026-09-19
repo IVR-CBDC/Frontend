@@ -179,6 +179,33 @@ describe("GET /api/deals/:id/scenarios", () => {
     expect(response.body.scenarios[0]).toMatchObject({ id: "cbdc", available: true });
   });
 
+  // F11 (final review): ветка export (to=RU) была не покрыта тестом —
+  // corridorParams() решает, в какую сторону считаются реальные деньги
+  // (import: RU -> контрагент, export: контрагент -> RU), ошибка здесь
+  // молча запросила бы котировки для обратного направления.
+  it("зовёт commission с параметрами сделки (export -> to=RU)", async () => {
+    let quotesCall: { body: unknown } | undefined;
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.includes("/api/core/deals/d1")) {
+        return jsonResponse(200, {
+          deal: coreDeal({ operation_type: "export", counterparty_country: "CN", currency: "USD", amount: 1000 }),
+        });
+      }
+      if (url.includes("/api/commission/quotes")) {
+        quotesCall = { body: JSON.parse(init?.body as string) };
+        return jsonResponse(200, quotesResponse());
+      }
+      throw new Error(`неожиданный fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const app = createApp(testConfig());
+
+    const response = await request(app).get("/api/deals/d1/scenarios").set("Cookie", SESSION_COOKIE);
+
+    expect(response.status).toBe(200);
+    expect(quotesCall?.body).toMatchObject({ from_country: "CN", to_country: "RU" });
+  });
+
   it("повторный вызов в пределах TTL не ходит в commission второй раз, а после смены version — ходит", async () => {
     let dealVersion = 1;
     let quotesCalls = 0;
@@ -269,5 +296,97 @@ describe("GET /api/deals/:id/tracking", () => {
     });
     expect(response.body.timeline).toHaveLength(1);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("валидация входа (F11, F12, final review)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  // F11: раньше Number("abc") === NaN уходил в core буквально как
+  // "?limit=NaN" — теперь это 400 до всякого похода к core.
+  it("нечисловой limit в GET /api/deals отвечает 400 VALIDATION_ERROR, не долетая до core", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const app = createApp(testConfig());
+
+    const response = await request(app).get("/api/deals?limit=abc").set("Cookie", SESSION_COOKIE);
+
+    expect(response.status).toBe(400);
+    expect(response.body.code).toBe("VALIDATION_ERROR");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("нечисловой limit в GET /api/notifications тоже отвечает 400, не долетая до core", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const app = createApp(testConfig());
+
+    const response = await request(app).get("/api/notifications?limit=abc").set("Cookie", SESSION_COOKIE);
+
+    expect(response.status).toBe(400);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("корректный числовой limit по-прежнему доходит до core", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      expect(url).toContain("limit=5");
+      return jsonResponse(200, { items: [], count: 0 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const app = createApp(testConfig());
+
+    const response = await request(app).get("/api/deals?limit=5").set("Cookie", SESSION_COOKIE);
+
+    expect(response.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  // F12: req.body as ... заменено на валидацию через zod — три места.
+  it("POST /api/deals с некорректным телом (без обязательных полей) отвечает 400, не долетая до core", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const app = createApp(testConfig());
+
+    const response = await request(app)
+      .post("/api/deals")
+      .set("Cookie", SESSION_COOKIE)
+      .set("Origin", "http://localhost:5173")
+      .send({ counterpartyCountry: "CN" }); // остальные обязательные поля отсутствуют
+
+    expect(response.status).toBe(400);
+    expect(response.body.code).toBe("VALIDATION_ERROR");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("POST /api/deals/:id/scenario с нечисловым version отвечает 400, не долетая до core", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const app = createApp(testConfig());
+
+    const response = await request(app)
+      .post("/api/deals/d1/scenario")
+      .set("Cookie", SESSION_COOKIE)
+      .set("Origin", "http://localhost:5173")
+      .send({ scenario: "cbdc", version: "not-a-number" });
+
+    expect(response.status).toBe(400);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("POST .../documents/:id/submit без version отвечает 400, не долетая до core", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const app = createApp(testConfig());
+
+    const response = await request(app)
+      .post("/api/deals/d1/documents/doc1/submit")
+      .set("Cookie", SESSION_COOKIE)
+      .set("Origin", "http://localhost:5173")
+      .send({});
+
+    expect(response.status).toBe(400);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

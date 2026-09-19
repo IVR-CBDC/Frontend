@@ -1,4 +1,5 @@
 import { Router, type Request } from "express";
+import { z } from "zod";
 import type { Config } from "../config.js";
 import { readToken, requireSession } from "../session.js";
 import * as coreUpstream from "../upstream/core.js";
@@ -6,6 +7,7 @@ import * as commissionUpstream from "../upstream/commission.js";
 import type { CoreDeal, CoreDealSummary, CoreDocument, CoreTimelineStep } from "../upstream/core.js";
 import type { CommissionQuote } from "../upstream/commission.js";
 import { quotesCache } from "../services/cache.js";
+import { parseLimit, validateBody } from "../validation.js";
 import type {
   CreateDealInput,
   Deal,
@@ -17,6 +19,27 @@ import type {
   SettlementScenario,
   TimelineEvent,
 } from "../types.js";
+
+// F12 (final review): применяем zod (был в зависимостях, не использовался)
+// вместо непроверенных `req.body as ...` — заодно даёт единообразное
+// VALIDATION_ERROR вместо того, чтобы core первым обнаружил кривое тело и
+// вернул своё сообщение об ошибке.
+const createDealBodySchema = z.object({
+  counterpartyCountry: z.string().min(1),
+  counterpartyName: z.string().min(1),
+  operationType: z.enum(["import", "export"]),
+  amount: z.number().positive(),
+  currency: z.string().min(1),
+}) satisfies z.ZodType<CreateDealInput>;
+
+const chooseScenarioBodySchema = z.object({
+  scenario: z.string().min(1),
+  version: z.number().int(),
+});
+
+const submitDocumentBodySchema = z.object({
+  version: z.number().int(),
+});
 
 function getConfig(req: Request): Config {
   return req.app.get("config") as Config;
@@ -164,7 +187,7 @@ dealsRouter.get("/deals", requireSession, async (req, res, next) => {
   try {
     const config = getConfig(req);
     const token = readToken(req) as string;
-    const limit = req.query.limit !== undefined ? Number(req.query.limit) : undefined;
+    const limit = parseLimit(req.query.limit);
     const { items } = await coreUpstream.listDeals(config, token, limit);
     res.json({ deals: items.map(toDashboardCard) });
   } catch (err) {
@@ -176,7 +199,7 @@ dealsRouter.post("/deals", requireSession, async (req, res, next) => {
   try {
     const config = getConfig(req);
     const token = readToken(req) as string;
-    const input = req.body as CreateDealInput;
+    const input = validateBody(createDealBodySchema, req.body);
     const { deal } = await coreUpstream.createDeal(config, token, {
       counterparty_country: input.counterpartyCountry,
       counterparty_name: input.counterpartyName,
@@ -241,7 +264,7 @@ dealsRouter.post("/deals/:id/scenario", requireSession, async (req, res, next) =
   try {
     const config = getConfig(req);
     const token = readToken(req) as string;
-    const { scenario, version } = req.body as { scenario: string; version: number };
+    const { scenario, version } = validateBody(chooseScenarioBodySchema, req.body);
     const { deal } = await coreUpstream.chooseScenario(config, token, req.params.id, {
       scenario,
       version,
@@ -258,7 +281,7 @@ dealsRouter.post("/deals/:dealId/documents/:documentId/submit", requireSession, 
   try {
     const config = getConfig(req);
     const token = readToken(req) as string;
-    const { version } = req.body as { version: number };
+    const { version } = validateBody(submitDocumentBodySchema, req.body);
     const { deal } = await coreUpstream.submitDocument(
       config,
       token,
