@@ -1,0 +1,212 @@
+name: CI
+
+# Тот же паттерн триггеров, что в Backend-репозитории (см.
+# IVR-CBDC/Backend .github/workflows/ci.yml): pull_request + push кроме
+# main (там уже подразумевается отдельный deploy-воркфлоу, гонять полный
+# набор тестов второй раз сразу после мержа не нужно).
+on:
+  pull_request:
+  push:
+    branches-ignore:
+      - main
+
+# Та же причина, что у Backend-репозитория: без concurrency серия пушей в
+# одну ветку выстраивает очередь джоб (особенно e2e, ~4 минуты стенда +
+# Playwright) — каждый новый пуш ждёт, пока отработает предыдущий. group
+# завязана на ветку/PR, cancel-in-progress отменяет устаревший прогон при
+# новом пуше в тот же ref.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ============================================================
+  # bff: install --frozen-lockfile, typecheck, test (vitest, upstream'ы
+  # подменены — стенд не нужен), build (tsc -> dist).
+  # ============================================================
+  bff:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: bff
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          # Та же версия, что зафиксирована в bff/Dockerfile и
+          # frontend/Dockerfile через `corepack prepare pnpm@11.3.0` — иначе
+          # --frozen-lockfile может разойтись с резолвером, которым лочился
+          # pnpm-lock.yaml.
+          version: 11.3.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: bff/pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+
+  # ============================================================
+  # frontend: то же самое для SPA (vitest + jsdom, без сети).
+  # ============================================================
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.3.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+
+  # ============================================================
+  # e2e: полный стенд (Backend-репозиторий + bff/frontend, собранные из
+  # этого чекаута) + Playwright против него.
+  #
+  # ЧЕСТНО (план 07, задача 3): эта джоба НЕ МОЖЕТ выполниться до тех пор,
+  # пока ни у одного из двух репозиториев нет git remote — шаг ниже
+  # `actions/checkout` с `repository: IVR-CBDC/Backend` обращается к
+  # реальному GitHub-репозиторию по имени, которого сейчас не существует
+  # (оба репозитория только локальные, `/home/legors/Documents/IVR` и
+  # `/home/legors/Documents/alfa-cbdc-hub`). Она не запускалась и не
+  # проходила на раннере — написана и верифицирована локально: разобрана
+  # парсером YAML (`python3 -c "import yaml; ..."`), шаги (сборка образов,
+  # gen-keys.sh, `docker compose ... up -d --build --wait`, `pnpm test` в
+  # e2e/) воспроизведены вручную командной строкой против настоящего стенда
+  # (см. отчёт задачи 3). Когда Backend-репозиторий получит remote
+  # (`IVR-CBDC/Backend`) и станет доступен для checkout из этого workflow
+  # (публичный репозиторий или secrets.BACKEND_CHECKOUT_TOKEN для
+  # приватного), эта джоба должна заработать без дополнительных правок —
+  # если нет, это находка для следующего прогона, а не повод переписывать
+  # её вслепую.
+  # ============================================================
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Frontend (this repo)
+        uses: actions/checkout@v4
+
+      - name: Checkout Backend
+        uses: actions/checkout@v4
+        with:
+          repository: IVR-CBDC/Backend
+          path: backend
+          # Если/когда Backend-репозиторий станет приватным на GitHub, сюда
+          # понадобится `token: ${{ secrets.BACKEND_CHECKOUT_TOKEN }}` —
+          # `secrets.GITHUB_TOKEN` этого воркфлоу не имеет доступа к другому
+          # репозиторию организации по умолчанию.
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.3.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: e2e/pnpm-lock.yaml
+
+      - name: Install e2e deps
+        working-directory: e2e
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright (chromium + system deps)
+        working-directory: e2e
+        run: pnpm exec playwright install --with-deps chromium
+
+      - uses: docker/setup-buildx-action@v3
+
+      # gen-keys.sh конвертирует PEM -> JWK через python3 + cryptography
+      # (тот же скрипт и та же причина явной установки, что в Backend-
+      # репозитории: GitHub не гарантирует cryptography в системном python3
+      # ubuntu-latest).
+      - name: Install python3 + cryptography (for Backend's gen-keys.sh)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends python3 python3-cryptography
+
+      - name: Generate JWT keys (Backend)
+        run: bash backend/infra/gen-keys.sh
+
+      - name: Build bff image
+        uses: docker/build-push-action@v5
+        with:
+          context: bff
+          file: bff/Dockerfile
+          tags: bff-ci:latest
+          load: true
+          cache-from: type=gha,scope=bff
+          cache-to: type=gha,mode=max,scope=bff
+
+      - name: Build frontend image
+        uses: docker/build-push-action@v5
+        with:
+          context: frontend
+          file: frontend/Dockerfile
+          tags: frontend-ci:latest
+          load: true
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
+
+      # Backend's ivr-cpp-base (drogon/libjwt, ~15-19 минут с нуля) не
+      # закэширован заранее отдельной джобой, как в самом Backend-репозитории
+      # (там джоба `cpp` кэширует его через type=gha до джобы `api`) — здесь
+      # это другой репозиторий с отдельным GHA-кэшем, так что первый прогон
+      # e2e в этом репозитории неизбежно медленный; последующие используют
+      # тот же cache-from/cache-to: type=gha, что и Backend.
+      - name: Bring up stand (EMULATOR_MANUAL=true, bff/frontend from this checkout)
+        working-directory: backend
+        env:
+          # Тот же трюк, что в Backend .github/workflows/ci.yml (джоба api):
+          # docker/setup-buildx-action переключает docker CLI на builder с
+          # container-драйвером, который не видит image store демона — а
+          # Dockerfile'ы service-auth/service-core делают
+          # `FROM ivr-cpp-base:latest`, только что загруженный в демон.
+          # BUILDX_BUILDER=default возвращает именно этот шаг на classic
+          # docker-драйвер (тот же демон, тот же image store) — не трогая
+          # билдер, который используют шаги сборки bff/frontend выше.
+          BUILDX_BUILDER: default
+          BFF_IMAGE: bff-ci:latest
+          FRONTEND_IMAGE: frontend-ci:latest
+          EMULATOR_MANUAL: "true"
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.dev.yml \
+            --profile bff --profile frontend up -d --build --wait
+
+      - name: Run Playwright suite
+        working-directory: e2e
+        run: pnpm test
+
+      - name: Dump backend compose logs on failure
+        if: failure()
+        working-directory: backend
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.dev.yml \
+            --profile bff --profile frontend logs > /tmp/e2e-compose-logs.txt 2>&1 || true
+
+      - name: Upload failure artifacts (traces, report, compose logs)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-failure-artifacts
+          path: |
+            e2e/playwright-report
+            e2e/test-results
+            /tmp/e2e-compose-logs.txt
+          if-no-files-found: ignore

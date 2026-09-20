@@ -260,3 +260,34 @@ pnpm test:ui     # интерактивная отладка (Playwright UI)
 cd frontend && npm run build   # -> frontend/dist (статика для раздачи любым сервером)
 cd bff && pnpm build           # -> bff/dist (node dist/index.js)
 ```
+
+## CI (план 07, задача 3)
+
+`.github/workflows/ci.yml` — на каждый `pull_request` и `push` в любую ветку
+кроме `main` (тот же паттерн, что у Backend-репозитория), три независимые
+джобы:
+
+- `bff` — `pnpm --dir bff install --frozen-lockfile`, `typecheck`, `test`
+  (vitest, upstream'ы подменены), `build`.
+- `frontend` — то же самое для `frontend` (vitest + jsdom, без сети).
+- `e2e` — чекаутит Backend-репозиторий (`IVR-CBDC/Backend`, путь `backend`),
+  собирает образы `bff`/`frontend` из этого чекаута, поднимает стенд
+  Backend-репозитория с `EMULATOR_MANUAL=true` (`make`-эквивалент —
+  `make e2e-stand-up` там же, см. README Backend-репозитория) и гоняет
+  Playwright (`e2e/`) против него; при падении трассировки/отчёт Playwright
+  и `docker compose logs` уходят в артефакт джобы.
+
+**Честно (не подлежит обсуждению):** ни у одного из двух репозиториев сейчас
+нет git remote, и ни один образ никуда не опубликован — шаг `actions/checkout`
+с `repository: IVR-CBDC/Backend` в джобе `e2e` обращается к реальному
+GitHub-репозиторию по имени, которого не существует. Джоба `e2e` **не
+выполнялась и не проходила на раннере GitHub Actions** — она написана и
+проверена локально: YAML разобран парсером (`python3 -c "import yaml; ..."`),
+`bash -n` прогнан по всем встроенным скриптам шагов, а сами шаги (сборка
+образов bff/frontend, `gen-keys.sh`, подъём стенда через
+`docker compose ... --profile bff --profile frontend up -d --build --wait`,
+`pnpm test` в `e2e/`) воспроизведены вручную на этой машине против настоящего
+поднятого стенда — все 4 спеки проходят дважды подряд (см. отчёт
+плана 07, задача 3). Джобы `bff` и `frontend` воспроизведены точно так же и
+тоже не запускались на реальном раннере GitHub Actions — раннер CI не
+проверен, только локальное воспроизведение его шагов.
