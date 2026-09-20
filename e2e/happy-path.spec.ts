@@ -92,7 +92,7 @@ test.describe("Сквозной путь сделки", () => {
     // Подтверждение сценария ведёт обратно на трекинг (ScenarioPage.confirm)
     // — сделка там уже должна значиться как перешедшая к сбору документов.
     await page.waitForURL(`/deals/${dealId}/tracking`);
-    await expect(page.locator("h1.page-title ~ span.mono")).toHaveText("Сбор документов");
+    await expect(page.getByTestId("deal-stage")).toHaveText("Сбор документов");
     await page.getByRole("link", { name: "Документооборот" }).click();
     await page.waitForURL(`/deals/${dealId}/documents`);
 
@@ -129,7 +129,7 @@ test.describe("Сквозной путь сделки", () => {
     await page.locator(`a[href="/deals/${dealId}/tracking"]`).click();
     await page.waitForURL(`/deals/${dealId}/tracking`);
 
-    const stageBadge = page.locator("h1.page-title ~ span.mono");
+    const stageBadge = page.getByTestId("deal-stage");
     await expect.poll(
       async () => {
         await tick();

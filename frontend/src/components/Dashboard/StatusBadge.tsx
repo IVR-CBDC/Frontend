@@ -23,6 +23,7 @@ export function StatusBadge({ stage }: { stage: DealStage }) {
   return (
     <span
       className="mono"
+      data-testid="deal-stage"
       style={{
         fontSize: 11.5,
         color,
