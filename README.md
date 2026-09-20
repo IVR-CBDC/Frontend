@@ -219,13 +219,16 @@ Backend-репозитории и запускается снаружи; `playwr
 Тестам обязательно нужен ручной режим эмулятора Backend-репозитория
 (`EMULATOR_MANUAL=true`) — иначе прогресс сделки (проверка документов,
 комплаенс, расчёт) решает время, а не тест, и `POST /internal/emulator/tick`
-отвечает `404`. Если стенд уже поднят с `EMULATOR_MANUAL=false`, пересоздавать
-нужно только `service-core`, не весь стенд:
+отвечает `404`.
+
+F8 (final review): единственный поддерживаемый способ поднять стенд под
+e2e — `make e2e-stand-up` в Backend-репозитории (см. его README, раздел
+«Стенд под e2e»); он зашивает `EMULATOR_MANUAL=true` в саму цель, а не
+полагается на то, что вызывающий её не забудет переменную окружения:
 
 ```bash
 cd /home/legors/Documents/IVR
-EMULATOR_MANUAL=true docker compose -f docker-compose.yml -f docker-compose.dev.yml \
-  --profile bff --profile frontend up -d --wait
+make e2e-stand-up
 # если стенд уже был поднят с EMULATOR_MANUAL=false — пересоздать только service-core:
 EMULATOR_MANUAL=true docker compose -f docker-compose.yml -f docker-compose.dev.yml \
   up -d --wait service-core
@@ -254,6 +257,16 @@ pnpm test:ui     # интерактивная отладка (Playwright UI)
 проверяют автоожидающими `expect(...)`/`expect.poll(...)` — без
 `waitForTimeout`/`sleep`.
 
+**F8 (final review, явно, а не молчанием):** первое слово критерия
+готовности (§1 спеки — «пользователь юрлица логинится...») сквозным тестом
+не закрыто в части самой формы регистрации: `company` заводится через
+прямой POST на `/api/auth/register`, а не через экран `/register`. Решение
+осознанное — скорость и надёжность подготовки данных важнее для остального
+набора, чем ещё один прогон формы, и путь входа (`/login`, в т.ч. с неверным
+паролем) e2e покрывает отдельно (`session.spec.ts`). Но сама форма
+регистрации сейчас не проверена ни одним e2e-тестом — это открытый пробел,
+а не забытый шаг.
+
 ## Сборка для продакшена
 
 ```bash
@@ -270,12 +283,20 @@ cd bff && pnpm build           # -> bff/dist (node dist/index.js)
 - `bff` — `pnpm --dir bff install --frozen-lockfile`, `typecheck`, `test`
   (vitest, upstream'ы подменены), `build`.
 - `frontend` — то же самое для `frontend` (vitest + jsdom, без сети).
-- `e2e` — чекаутит Backend-репозиторий (`IVR-CBDC/Backend`, путь `backend`),
-  собирает образы `bff`/`frontend` из этого чекаута, поднимает стенд
-  Backend-репозитория с `EMULATOR_MANUAL=true` (`make`-эквивалент —
-  `make e2e-stand-up` там же, см. README Backend-репозитория) и гоняет
-  Playwright (`e2e/`) против него; при падении трассировки/отчёт Playwright
-  и `docker compose logs` уходят в артефакт джобы.
+- `e2e` — чекаутит Backend-репозиторий (`IVR-CBDC/Backend`, путь `backend`,
+  без `ref:` — т.е. его ветку по умолчанию), собирает образы `bff`/`frontend`
+  из этого чекаута, поднимает стенд Backend-репозитория с
+  `EMULATOR_MANUAL=true` (`make e2e-stand-up` там же, см. README
+  Backend-репозитория) и гоняет Playwright (`e2e/`) против него; при падении
+  трассировки/отчёт Playwright и `docker compose logs` уходят в артефакт
+  джобы.
+
+  **Порядок мержа (F2, final review):** `make e2e-stand-up` существует
+  только в ветке `feat/e2e-support` Backend-репозитория, не в его ветке по
+  умолчанию — эта джоба не может пройти, пока `feat/e2e-support` не влита в
+  default branch Backend. Preflight-шаг `make -n e2e-stand-up` в
+  `ci.yml` ловит рассинхрон явным сообщением, а не голым «No rule to make
+  target».
 
 **Честно (не подлежит обсуждению):** ни у одного из двух репозиториев сейчас
 нет git remote, и ни один образ никуда не опубликован — шаг `actions/checkout`

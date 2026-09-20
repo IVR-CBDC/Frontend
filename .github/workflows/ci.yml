@@ -11,10 +11,19 @@ on:
       - main
 
 # Та же причина, что у Backend-репозитория: без concurrency серия пушей в
-# одну ветку выстраивает очередь джоб (особенно e2e, ~4 минуты стенда +
-# Playwright) — каждый новый пуш ждёт, пока отработает предыдущий. group
-# завязана на ветку/PR, cancel-in-progress отменяет устаревший прогон при
-# новом пуше в тот же ref.
+# одну ветку выстраивает очередь джоб — каждый новый пуш ждёт, пока
+# отработает предыдущий. group завязана на ветку/PR, cancel-in-progress
+# отменяет устаревший прогон при новом пуше в тот же ref.
+#
+# F7 (final review): раньше здесь стояло "особенно e2e, ~4 минуты стенда +
+# Playwright" — верно только при уже тёплом GHA-кэше `ivr-cpp-base`.
+# service-auth/service-core собираются поверх него полным `cmake && make`
+# при каждом `up -d --build` внутри `make e2e-stand-up`, и никакой
+# cache-from до этой сборки не доходит (см. комментарий у шага "Restore/build
+# ivr-cpp-base" ниже) — на чистом раннере (нет ни `ivr-cpp-base`, ни слоёв
+# service-auth/service-core в GHA-кэше) это ~25-40 минут на джобу, а не 4.
+# Настоящее лечение — публиковать образы service-auth/service-core в ghcr и
+# тянуть готовые теги вместо пересборки на каждый PR — план 08.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -100,6 +109,19 @@ jobs:
   # приватного), эта джоба должна заработать без дополнительных правок —
   # если нет, это находка для следующего прогона, а не повод переписывать
   # её вслепую.
+  #
+  # F2 (final review, требование к порядку мержа): `make e2e-stand-up`
+  # существует только в ветке Backend-репозитория `feat/e2e-support`
+  # (создана Task 3 плана 07), не в его ветке по умолчанию (`main`). Эта
+  # джоба чекаутит Backend без `ref:` — то есть его ветку по умолчанию — и
+  # значит НЕ СМОЖЕТ пройти до тех пор, пока `feat/e2e-support` не будет
+  # влита в default branch Backend-репозитория. Порядок обязателен: сначала
+  # мерж Backend-ветки, потом (или одновременно) этот workflow может стать
+  # зелёным — если смотреть на первый зелёный прогон этой джобы раньше, чем
+  # на мерж Backend, это будет означать, что она либо ещё не запускалась
+  # по-настоящему, либо чекаутит не тот код, который вы думаете. Шаг
+  # "Preflight: e2e-stand-up target exists" ниже ловит именно это несоответствие
+  # с понятным сообщением вместо голого "No rule to make target".
   # ============================================================
   e2e:
     runs-on: ubuntu-latest
@@ -130,6 +152,14 @@ jobs:
       - name: Install e2e deps
         working-directory: e2e
         run: pnpm install --frozen-lockfile
+
+      # F8 (final review, сделать заодно): раньше в e2e/ не было скрипта
+      # typecheck и ни одна джоба его не гоняла — ошибки типов в спеках
+      # всплывали только в рантайме, внутри многоминутной e2e-джобы, вместо
+      # того чтобы падать за секунды.
+      - name: Typecheck e2e specs
+        working-directory: e2e
+        run: pnpm typecheck
 
       # Кэш браузерных бинарников Playwright (не системных apt-зависимостей,
       # их --with-deps всё равно ставит заново каждый раз — они не в этом
@@ -216,6 +246,24 @@ jobs:
       # а не повторено здесь текстом. `ivr-cpp-base:latest` уже загружен
       # шагом выше, поэтому проверка `docker image inspect` внутри цели
       # находит его и не пересобирает.
+      # F2 (final review): без этого шага "No rule to make target
+      # 'e2e-stand-up'" — единственный симптом, если Backend-чекаут выше
+      # (ветка по умолчанию, см. комментарий над джобой `e2e`) ещё не
+      # содержит `feat/e2e-support` (или её эквивалент после мержа). `make -n`
+      # ничего не выполняет (dry-run), только парсит Makefile и печатает, что
+      # бы он сделал — дешёвая, мгновенная проверка перед тратой минут на
+      # сборку образов и стенд.
+      - name: Preflight — e2e-stand-up target exists
+        working-directory: backend
+        run: |
+          make -n e2e-stand-up || {
+            echo "::error::make e2e-stand-up не найдена в чекауте Backend-репозитория." \
+                 "Обычно значит: ветка feat/e2e-support (план 07, задача 3) ещё не влита" \
+                 "в default branch Backend — см. комментарий над джобой e2e в этом файле" \
+                 "про обязательный порядок мержа."
+            exit 1
+          }
+
       - name: Bring up stand (make e2e-stand-up, bff/frontend from this checkout)
         working-directory: backend
         env:
@@ -239,12 +287,19 @@ jobs:
         working-directory: e2e
         run: pnpm test
 
+      # F8 (final review, сделать заодно): раньше compose-логи писались в
+      # /tmp/e2e-compose-logs.txt — отдельный корень от e2e/playwright-report
+      # и e2e/test-results (внутри воркспейса, GITHUB_WORKSPACE). actions/upload-artifact
+      # объединяет несколько корней архивом с их общим префиксом путей,
+      # поэтому файл из /tmp получал вложенный путь на несколько уровней
+      # глубже, чем нужно. Пишем лог в воркспейс (backend/e2e-compose-logs.txt),
+      # рядом с остальными артефактами падения — единый корень, плоский архив.
       - name: Dump backend compose logs on failure
         if: failure()
         working-directory: backend
         run: |
           docker compose -f docker-compose.yml -f docker-compose.dev.yml \
-            --profile bff --profile frontend logs > /tmp/e2e-compose-logs.txt 2>&1 || true
+            --profile bff --profile frontend logs > e2e-compose-logs.txt 2>&1 || true
 
       - name: Upload failure artifacts (traces, report, compose logs)
         if: failure()
@@ -254,5 +309,5 @@ jobs:
           path: |
             e2e/playwright-report
             e2e/test-results
-            /tmp/e2e-compose-logs.txt
+            backend/e2e-compose-logs.txt
           if-no-files-found: ignore
