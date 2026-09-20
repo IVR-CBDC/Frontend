@@ -1,0 +1,149 @@
+name: Publish images
+
+# Публикация образов bff и SPA в ghcr + сообщение Backend-репозиторию о том,
+# какими тегами они опубликованы.
+#
+# ЗАЧЕМ ЭТОТ WORKFLOW СУЩЕСТВУЕТ. Деплой живёт в Backend-репозитории
+# (спека §8): там один `helm upgrade` на пять релизов, и три из пяти образов
+# собираются там же, поэтому тегируются sha его коммита. Два оставшихся —
+# bff и frontend — собираются здесь, и sha ЭТОГО коммита Backend-репозиторию
+# ниоткуда не известен. Разрыв закрывается ровно одним механизмом:
+# `repository_dispatch` отсюда туда, который кладёт теги в
+# `infra/helm/frontend-tags.env` коммитом бота. Только так ответ на вопрос
+# «что сейчас на стенде» остаётся в git, а не в состоянии реестра.
+#
+# ПОЧЕМУ НЕ `latest`. `helm upgrade` с неизменившимся `image.tag` — no-op:
+# kubelet не пойдёт за новым образом, релиз обновится «успешно», и новая
+# сборка фронта молча не выкатится. Поэтому в dispatch уезжает `sha-<7>`, а
+# не плавающий тег; `infra/k3s-preflight.sh` Backend-репозитория отвергает
+# плавающие теги явным сообщением.
+#
+# ПОЧЕМУ ПЛАВАЮЩИЙ ТЕГ ВСЁ-ТАКИ ПУБЛИКУЕТСЯ. `:main` нужен не выкату, а
+# чужому CI — симметрично тому, как этот репозиторий тянет backend-образы по
+# `:main` в джобе e2e (.github/workflows/ci.yml).
+#
+# ЧЕСТНО: этот workflow здесь НЕ ВЫПОЛНЯЛСЯ и выполниться не может — у
+# репозитория нет remote, организации IVR-CBDC на GitHub не существует,
+# ghcr-пакетов нет, токен BACKEND_DISPATCH_TOKEN не заведён. Он проверен
+# разбором YAML и сверкой контракта с принимающей стороной
+# (Backend/.github/workflows/frontend-tags.yml: тип события и поля payload).
+
+on:
+  push:
+    branches:
+      - main
+  # Ручной прогон: пригодится, если dispatch не дошёл (например, истёк
+  # токен), а пересобирать образы ради этого незачем — повторный запуск на
+  # том же коммите даст те же теги, шаги идемпотентны.
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      sha-tag: ${{ steps.meta.outputs.sha-tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: meta
+        run: |
+          set -euo pipefail
+          # Тот же формат, что у Backend (deploy.yml, джоба plan): sha-<7>.
+          # Совпадение формата — не косметика: человек, читающий
+          # frontend-tags.env рядом с логом выката, не должен гадать, какой
+          # из двух видов тега перед ним.
+          echo "sha-tag=sha-$(echo '${{ github.sha }}' | cut -c1-7)" >> "$GITHUB_OUTPUT"
+          echo "repo-lc=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+          echo "built-at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Имена пакетов заданы не здесь: они зафиксированы в values
+      # Backend-репозитория (infra/helm/values-bff.yaml,
+      # values-frontend.yaml) — ghcr.io/ivr-cbdc/frontend/bff и
+      # ghcr.io/ivr-cbdc/frontend/spa. Deploy подставляет из dispatch только
+      # ТЕГ, а repository берёт оттуда. Разъехаться нельзя молча: pre-flight
+      # выката делает `docker manifest inspect` по собранной ссылке.
+      - name: Build and push bff
+        uses: docker/build-push-action@v5
+        with:
+          context: bff
+          file: bff/Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.meta.outputs.repo-lc }}/frontend/bff:${{ steps.meta.outputs.sha-tag }}
+            ${{ env.REGISTRY }}/${{ steps.meta.outputs.repo-lc }}/frontend/bff:main
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.sha-tag }}
+            org.opencontainers.image.created=${{ steps.meta.outputs.built-at }}
+            org.opencontainers.image.title=bff
+          cache-from: type=gha,scope=bff
+          cache-to: type=gha,mode=max,scope=bff
+
+      - name: Build and push SPA
+        uses: docker/build-push-action@v5
+        with:
+          context: frontend
+          file: frontend/Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.meta.outputs.repo-lc }}/frontend/spa:${{ steps.meta.outputs.sha-tag }}
+            ${{ env.REGISTRY }}/${{ steps.meta.outputs.repo-lc }}/frontend/spa:main
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.sha-tag }}
+            org.opencontainers.image.created=${{ steps.meta.outputs.built-at }}
+            org.opencontainers.image.title=spa
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
+
+  # ============================================================
+  # dispatch: отдельная джоба, а не шаг в publish — она обязана выполниться
+  # ТОЛЬКО если оба образа реально уехали в реестр. Иначе Backend получил бы
+  # тег несуществующего образа и упёрся бы в ImagePullBackOff уже на выкате,
+  # где чинить дороже.
+  # ============================================================
+  dispatch:
+    needs: publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Notify Backend repository of new frontend tags
+        env:
+          # PAT с правом `contents: write` на IVR-CBDC/Backend.
+          # secrets.GITHUB_TOKEN здесь не годится принципиально: он ограничен
+          # этим репозиторием и не может ни послать dispatch в чужой, ни
+          # закоммитить там файл.
+          TOKEN: ${{ secrets.BACKEND_DISPATCH_TOKEN }}
+          SHA_TAG: ${{ needs.publish.outputs.sha-tag }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TOKEN:-}" ]; then
+            echo "::error::secrets.BACKEND_DISPATCH_TOKEN не задан — Backend не узнает о новых" \
+                 "тегах, и его CD продолжит обрываться на заглушке в frontend-tags.env." \
+                 "Нужен PAT с contents:write на IVR-CBDC/Backend."
+            exit 1
+          fi
+          curl --fail-with-body -sS -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/IVR-CBDC/Backend/dispatches \
+            -d "$(printf '{"event_type":"frontend-images","client_payload":{"bff_tag":"%s","frontend_tag":"%s","source_sha":"%s","source_run":"%s"}}' \
+                   "$SHA_TAG" "$SHA_TAG" "${{ github.sha }}" "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}")"
+          echo "dispatch отправлен: bff_tag=$SHA_TAG frontend_tag=$SHA_TAG"

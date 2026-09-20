@@ -19,11 +19,15 @@ on:
 # Playwright" — верно только при уже тёплом GHA-кэше `ivr-cpp-base`.
 # service-auth/service-core собираются поверх него полным `cmake && make`
 # при каждом `up -d --build` внутри `make e2e-stand-up`, и никакой
-# cache-from до этой сборки не доходит (см. комментарий у шага "Restore/build
-# ivr-cpp-base" ниже) — на чистом раннере (нет ни `ivr-cpp-base`, ни слоёв
-# service-auth/service-core в GHA-кэше) это ~25-40 минут на джобу, а не 4.
-# Настоящее лечение — публиковать образы service-auth/service-core в ghcr и
-# тянуть готовые теги вместо пересборки на каждый PR — план 08.
+# cache-from до этой сборки не доходил — на чистом раннере это было ~25-40
+# минут на джобу, а не 4.
+#
+# План 08 (Task 4): вылечено. service-auth/service-core/service-commission
+# больше здесь не собираются — CD Backend публикует их в ghcr, а джоба e2e
+# тянет готовые образы по плавающему тегу `:main` (см. шаг «Pull backend
+# images» ниже). Собираются только bff и frontend — то, что этот репозиторий
+# и меняет. Сколько это занимает на самом деле, измерить здесь нельзя:
+# раннера нет, джоба ни разу не выполнялась.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -205,35 +209,59 @@ jobs:
           cache-from: type=gha,scope=frontend
           cache-to: type=gha,mode=max,scope=frontend
 
-      # F (review round 1, критичная находка): service-auth/service-core
-      # Dockerfile'ы Backend-репозитория начинаются с `ARG
-      # BASE_IMAGE=ivr-cpp-base:latest` — этот образ производит сервис
-      # `cpp-base` из docker-compose.yml, но он сидит за `profiles: [build]`,
-      # а `make e2e-stand-up` (как и наша прежняя прямая команда) поднимает
-      # стенд через `--profile bff --profile frontend`, профиль `build`
-      # никогда не активируется. На этой машине образ `ivr-cpp-base:latest`
-      # уже был в локальном Docker-сторе от более ранней работы по плану, и
-      # `--build` молча его переиспользовал — но на чистом раннере, где его
-      # нет ни локально, ни в каком-либо реестре, `docker compose ... up
-      # --build` упадёт на сборке service-auth/service-core с `pull access
-      # denied` (Docker пытается стянуть `ivr-cpp-base:latest` как внешний
-      # образ). Это НЕ вопрос скорости — без этого шага джоба не может
-      # пройти в принципе, вне зависимости от checkout-по-имени. Тот же образ
-      # и тот же Dockerfile, что собирает джоба `cpp` в самом
-      # Backend-репозитории — здесь нет отдельной прогревающей джобы (кэш
-      # GHA этого, Frontend, репозитория изначально пуст), поэтому кэшируем
-      # его прямо тут: `cache-from`+`cache-to: type=gha` на этом шаге, чтобы
-      # только самый первый прогон в этом репозитории платил полную сборку
-      # (~15-19 минут), а не каждый.
-      - name: Restore/build ivr-cpp-base (needed by service-auth/service-core FROM)
-        uses: docker/build-push-action@v5
+      # ПЛАН 08 (Task 4) — ДОЛГ ПЛАНА 07 ЗАКРЫТ: backend-образы тянутся
+      # готовыми, а не собираются здесь.
+      #
+      # Что было раньше и почему это было неправильно. Здесь стоял шаг
+      # «Restore/build ivr-cpp-base», а `make e2e-stand-up` вызывался с
+      # `--build`, то есть каждый PR фронт-репозитория собирал C++ трёх
+      # чужих сервисов полным cmake поверх drogon. На тёплом кэше GHA это
+      # минуты, на холодном — 25-40 минут на джобу. И главное: эта сборка
+      # ничего не проверяла. Код Backend в PR фронта не менялся, его
+      # тестирует его собственный CI.
+      #
+      # Что теперь. CD Backend (`.github/workflows/deploy.yml`, план 08
+      # Task 3) на каждый push в main публикует service-auth/service-core/
+      # service-commission в ghcr двумя тегами: `sha-<7>` — им выкатывается
+      # стенд, и плавающим `:main` — он для нас. Плавающий тег здесь не
+      # дефект, а единственно возможный выбор: sha коммита Backend этому
+      # прогону неизвестен и узнать его неоткуда (чекаут ниже берёт ветку
+      # по умолчанию). Для ВЫКАТА плавающий тег запрещён и отвергается
+      # `infra/k3s-preflight.sh`; здесь речь про эфемерный стенд одной
+      # джобы, где воспроизводимость даёт не тег, а то, что образ собран из
+      # той же ветки main, что и чекаут Backend выше.
+      #
+      # `ivr-cpp-base` больше не нужен вовсе: он был нужен как база для
+      # сборки, а сборки здесь нет.
+      - name: Log in to ghcr (backend images)
+        uses: docker/login-action@v3
         with:
-          context: backend/infra/docker
-          file: backend/infra/docker/cpp-base.Dockerfile
-          tags: ivr-cpp-base:latest
-          load: true
-          cache-from: type=gha,scope=cpp-base
-          cache-to: type=gha,mode=max,scope=cpp-base
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          # Пакеты Backend-репозитория принадлежат другому репозиторию
+          # организации: если они не публичные, GITHUB_TOKEN этого workflow
+          # их не увидит и `docker pull` упадёт на 403 — тогда сюда нужен
+          # PAT с read:packages в secrets.GHCR_READ_TOKEN.
+          password: ${{ secrets.GHCR_READ_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Pull backend images (instead of building C++)
+        env:
+          BACKEND_IMAGE_PREFIX: ghcr.io/ivr-cbdc/backend
+          BACKEND_IMAGE_TAG: main
+        run: |
+          set -euo pipefail
+          for s in service-auth service-core service-commission; do
+            ref="$BACKEND_IMAGE_PREFIX/$s:$BACKEND_IMAGE_TAG"
+            echo "::group::pull $ref"
+            docker pull "$ref" || {
+              echo "::error::не удалось стянуть $ref." \
+                   "Обычно значит, что CD Backend (deploy.yml, push в main) ещё ни разу не" \
+                   "публиковал образы, либо пакет приватный и нужен secrets.GHCR_READ_TOKEN" \
+                   "с read:packages."
+              exit 1
+            }
+            echo "::endgroup::"
+          done
 
       # F (review round 1, важная находка): раньше здесь дублировался сырой
       # `docker compose ... --profile bff --profile frontend up -d --build
@@ -267,20 +295,22 @@ jobs:
       - name: Bring up stand (make e2e-stand-up, bff/frontend from this checkout)
         working-directory: backend
         env:
-          # Тот же трюк, что в Backend .github/workflows/ci.yml (джоба api):
-          # docker/setup-buildx-action переключает docker CLI на builder с
-          # container-драйвером, который не видит image store демона — а
-          # Dockerfile'ы service-auth/service-core делают
-          # `FROM ${BASE_IMAGE}` (ivr-cpp-base:latest, только что загруженный
-          # в демон шагом выше). BUILDX_BUILDER=default возвращает именно
-          # этот шаг (`make e2e-stand-up` внутри вызывает `docker compose
-          # ... --build`) на classic docker-драйвер, который строит через
-          # тот же демон и видит его image store — билдер, который
-          # использовали шаги сборки bff/frontend/ivr-cpp-base выше, при
-          # этом не трогаем.
-          BUILDX_BUILDER: default
+          # Пустой E2E_BUILD = `docker compose up` без `--build`: ничего не
+          # собираем, все пять образов уже в локальном сторе демона (bff и
+          # frontend — `load: true` шагами сборки выше, три backend-сервиса —
+          # `docker pull`). Прежний трюк с BUILDX_BUILDER=default здесь
+          # больше не нужен: он существовал только ради того, чтобы сборка
+          # внутри compose видела image store демона, а сборки внутри
+          # compose теперь нет.
+          E2E_BUILD: ""
           BFF_IMAGE: bff-ci:latest
           FRONTEND_IMAGE: frontend-ci:latest
+          # Те же переменные, что и в docker-compose.yml Backend (план 08,
+          # Task 4): имя образа каждого собираемого там сервиса
+          # параметризовано именно ради этого случая.
+          SERVICE_AUTH_IMAGE: ghcr.io/ivr-cbdc/backend/service-auth:main
+          SERVICE_CORE_IMAGE: ghcr.io/ivr-cbdc/backend/service-core:main
+          SERVICE_COMMISSION_IMAGE: ghcr.io/ivr-cbdc/backend/service-commission:main
         run: make e2e-stand-up
 
       - name: Run Playwright suite
@@ -298,7 +328,10 @@ jobs:
         if: failure()
         working-directory: backend
         run: |
-          docker compose -f docker-compose.yml -f docker-compose.dev.yml \
+          # Тот же набор `-f`, которым поднят стенд (план 08 добавил
+          # docker-compose.e2e.yml). Расхождение здесь не сломало бы прогон,
+          # но compose ругался бы на неизвестные ему контейнеры проекта.
+          docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.e2e.yml \
             --profile bff --profile frontend logs > e2e-compose-logs.txt 2>&1 || true
 
       - name: Upload failure artifacts (traces, report, compose logs)

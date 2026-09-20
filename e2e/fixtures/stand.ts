@@ -2,13 +2,32 @@ import { test as base, expect as baseExpect, type Locator, type Page } from "@pl
 import { randomUUID } from "node:crypto";
 
 // Адреса стенда (см. README.md «Локальный запуск против стенда Backend»).
-// SPA_URL совпадает с baseURL плейсрайта — он же значение Origin для
-// мутирующих запросов, которые фикстура шлёт мимо браузера напрямую в BFF
-// (BFF проверяет Origin на CSRF, см. README «Контракт для SPA»,
-// FORBIDDEN_ORIGIN). CORE_URL — только для ручного тика эмулятора
-// (EMULATOR_MANUAL=true), сам SPA туда никогда не ходит.
+//
+// План 08 (Task 4): адрес ОДИН. nginx образа SPA проксирует `/api` и `/ws`
+// на BFF (frontend/nginx.conf), то есть ровно тот путь, которым в BFF
+// ходит настоящий браузер, — значит и запросы, которые фикстуры шлют мимо
+// браузера, должны идти туда же. Два следствия:
+//
+//  * `Origin` совпадает по построению. BFF проверяет Origin на CSRF (см.
+//    README «Контракт для SPA», FORBIDDEN_ORIGIN); пока адресов было два,
+//    их совпадение держалось на том, что кто-то не забыл выставить обе
+//    переменные согласованно — а расхождение давало 403 в середине теста.
+//  * прогон проверяет тот же периметр, что видит пользователь. План 08
+//    (Task 1) убрал наружу всё, кроме frontend и bff; e2e, ходившие в BFF
+//    по прямому host-порту, обходили бы это изменение и не заметили бы его
+//    поломки.
+//
+// E2E_BFF_URL оставлен рычагом для нестандартного стенда (BFF на отдельном
+// домене); в обычном прогоне его задавать не нужно.
+//
+// CORE_URL — единственный настоящий особый случай: `POST
+// /internal/emulator/tick` внутренняя, наружу не публикуется ни в compose,
+// ни в k3s (спека §4.3), BFF её не проксирует. Она доступна только по
+// host-порту service-core, который открывает dev-оверлей compose-стенда —
+// и именно поэтому e2e живут на compose-стенде, а не в кластере (решение
+// записано в спеку, §4.3).
 export const SPA_URL = process.env.E2E_BASE_URL ?? "http://127.0.0.1:8090";
-export const BFF_URL = process.env.E2E_BFF_URL ?? "http://127.0.0.1:14000";
+export const BFF_URL = process.env.E2E_BFF_URL ?? SPA_URL;
 export const CORE_URL = process.env.E2E_CORE_URL ?? "http://127.0.0.1:18081";
 
 // Черновик мастера создания сделки (см. CreateDealWizard.tsx) — переживает
@@ -88,10 +107,12 @@ export const test = base.extend<Fixtures>({
         const res = await request.post(`${CORE_URL}/internal/emulator/tick`);
         if (res.status() === 404) {
           throw new Error(
-            `POST ${CORE_URL}/internal/emulator/tick вернул 404 — стенд поднят без EMULATOR_MANUAL=true. ` +
-              "Пересоздай service-core (из /home/legors/Documents/IVR): " +
-              "EMULATOR_MANUAL=true docker compose -f docker-compose.yml -f docker-compose.dev.yml " +
-              "up -d --wait service-core",
+            `POST ${CORE_URL}/internal/emulator/tick вернул 404 — стенд поднят в автоматическом ` +
+              "режиме эмулятора (ручка регистрируется только при EMULATOR_MANUAL=true).\n" +
+              "Штатно сюда дойти уже нельзя: режим проверяет globalSetup по полю emulator_manual " +
+              "в /health service-core (план 08, Task 4). Если этот текст всё-таки виден — значит " +
+              "core пересоздали ПОСЛЕ старта прогона.\n" +
+              "Чинить (из /home/legors/Documents/IVR): make e2e-stand-up",
           );
         }
         if (!res.ok()) {
