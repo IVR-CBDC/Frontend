@@ -1,4 +1,4 @@
-import { test as base, type Page } from "@playwright/test";
+import { test as base, expect as baseExpect, type Locator, type Page } from "@playwright/test";
 import { randomUUID } from "node:crypto";
 
 // Адреса стенда (см. README.md «Локальный запуск против стенда Backend»).
@@ -24,7 +24,11 @@ export interface Company {
   companyName: string;
 }
 
-function randomInn(): string {
+// F8 (final fix wave): раньше дублировалась дословно между fixtures/stand.ts
+// (фикстура company) и isolation.spec.ts (компания B регистрируется во
+// втором browser-контексте, отдельно от фикстуры company) — вынесена сюда,
+// единственный источник.
+export function randomInn(): string {
   let digits = "";
   for (let i = 0; i < 10; i++) digits += Math.floor(Math.random() * 10);
   return digits;
@@ -113,3 +117,32 @@ export const test = base.extend<Fixtures>({
 });
 
 export { expect } from "@playwright/test";
+
+// F8 (final fix wave): дублировалась дословно между happy-path.spec.ts и
+// recovery.spec.ts — оба гоняют один и тот же цикл "тикнуть, если
+// 'Отклонён' — переподать, ждать 'Подтверждён'" на строке документа.
+// F5 (final fix wave): раньше локатор строки — `row.locator("span.mono")`,
+// общий CSS-класс с другими .mono-элементами карточки/страницы (см.
+// ScenarioPage.tsx StatBlock, DashboardPage.tsx SummaryStat) — теперь
+// `data-testid="document-status"` (DocumentsPage.tsx), однозначный и
+// нечувствительный к появлению второго .mono в той же строке.
+export async function waitForDocumentApproved(
+  row: Locator,
+  tick: (times?: number) => Promise<void>,
+): Promise<void> {
+  const statusBadge = row.getByTestId("document-status");
+  await baseExpect
+    .poll(
+      async () => {
+        await tick();
+        const status = await statusBadge.textContent();
+        if (status === "Отклонён") {
+          const resubmit = row.getByRole("button", { name: /Отправить на проверку/ });
+          if (await resubmit.isVisible()) await resubmit.click();
+        }
+        return status;
+      },
+      { timeout: 60_000, message: "документ не дошёл до 'Подтверждён'" },
+    )
+    .toBe("Подтверждён");
+}

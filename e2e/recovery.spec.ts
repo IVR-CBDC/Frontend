@@ -21,7 +21,7 @@
 // вероятность отказа в эмуляторе изменилась, а не что тест сломан.
 
 import type { Locator, Page } from "@playwright/test";
-import { expect, test } from "./fixtures/stand";
+import { expect, test, waitForDocumentApproved } from "./fixtures/stand";
 
 // Этот тест — единственный в наборе, который намеренно гоняет много
 // реальных HTTP-вызовов (tick() дёргается в expect.poll на каждой из
@@ -52,7 +52,19 @@ test.describe("Восстановление сделки после отклон
     // по doc_review_sec каждая, см. ниже), которое нельзя обойти без
     // waitForTimeout/угадывания хеша. Поэтому этому тесту одному нужен
     // больший бюджет, чем дефолтные 120с из playwright.config.ts.
-    test.setTimeout(300_000);
+    //
+    // F3 (final fix wave): 300_000 было мало — каждая попытка стоит ~13-16с
+    // (две задержки по 5с + клики мастера), 40 попыток * 16с ≈ 640с. При
+    // бюджете 300с цикл успевал сделать только ~20 из 40 попыток, поэтому
+    // собственное диагностическое сообщение цикла ("за 40 сделок ни один
+    // документ не был отклонён...", см. ниже) было недостижимо — тест умирал
+    // по таймауту Playwright ("Test timeout of 300000ms exceeded") без этой
+    // подсказки в ~1.4% прогонов (12% честных падений сообщением превратились
+    // в ~1.5% немых таймаутов). Поднимаем бюджет выше 40 * 16s ≈ 640s с
+    // запасом, чтобы цикл гарантированно успевал дойти до своего собственного
+    // throw. Корневая причина (реальные секунды ожидания вместо
+    // детерминированного advance_sec) — план 08, см. F4.
+    test.setTimeout(720_000);
 
     let rejectedRow: Locator | null = null;
     let dealId: string | null = null;
@@ -71,7 +83,7 @@ test.describe("Восстановление сделки после отклон
       // "Подтверждён" (не повезло — вердикт по обоим уже вынесен, отказа не
       // было).
       const rows = page.getByTestId("document-row");
-      const statusBadges = rows.locator("span.mono");
+      const statusBadges = rows.getByTestId("document-status");
       let outcome: "rejected" | "approved" | null = null;
       await expect
         .poll(
@@ -96,7 +108,7 @@ test.describe("Восстановление сделки после отклон
         const count = await rows.count();
         for (let i = 0; i < count; i++) {
           const row = rows.nth(i);
-          if ((await row.locator("span.mono").textContent()) === "Отклонён") {
+          if ((await row.getByTestId("document-status").textContent()) === "Отклонён") {
             rejectedRow = row;
             break;
           }
@@ -124,7 +136,7 @@ test.describe("Восстановление сделки после отклон
     // Переподаём отклонённый документ — согласно documentApproved, вторая
     // попытка (attempt >= 1) одобряется всегда.
     await rejectedRow.getByRole("button", { name: /Отправить на проверку/ }).click();
-    await expect(rejectedRow.locator("span.mono")).not.toHaveText("Отклонён");
+    await expect(rejectedRow.getByTestId("document-status")).not.toHaveText("Отклонён");
 
     // Доводим все документы сделки (включая переподанный) до "Подтверждён" —
     // тикаем и, если какой-то документ всё ещё "Отклонён" (после уже второй
@@ -188,27 +200,8 @@ async function createDealThroughDocuments(page: Page): Promise<string> {
   for (let i = 0; i < rowCount; i++) {
     const row = rows.nth(i);
     await row.getByRole("button", { name: /Отправить на проверку/ }).click();
-    await expect(row.locator("span.mono")).not.toHaveText("Не загружен");
+    await expect(row.getByTestId("document-status")).not.toHaveText("Не загружен");
   }
 
   return dealId;
-}
-
-async function waitForDocumentApproved(
-  row: Locator,
-  tick: (times?: number) => Promise<void>,
-): Promise<void> {
-  const statusBadge = row.locator("span.mono");
-  await expect.poll(
-    async () => {
-      await tick();
-      const status = await statusBadge.textContent();
-      if (status === "Отклонён") {
-        const resubmit = row.getByRole("button", { name: /Отправить на проверку/ });
-        if (await resubmit.isVisible()) await resubmit.click();
-      }
-      return status;
-    },
-    { timeout: 60_000, message: "документ не дошёл до 'Подтверждён'" },
-  ).toBe("Подтверждён");
 }

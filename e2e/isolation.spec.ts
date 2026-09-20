@@ -11,7 +11,7 @@
 // способами: с дашборда, прямым переходом на /tracking и на /documents.
 
 import { randomUUID } from "node:crypto";
-import { expect, test, BFF_URL, SPA_URL } from "./fixtures/stand";
+import { expect, test, randomInn, BFF_URL, SPA_URL } from "./fixtures/stand";
 
 test.describe("Изоляция арендаторов", () => {
   test("компания B не видит сделку компании A ни на дашборде, ни по прямой ссылке", async ({
@@ -70,9 +70,3 @@ test.describe("Изоляция арендаторов", () => {
     await companyBContext.close();
   });
 });
-
-function randomInn(): string {
-  let digits = "";
-  for (let i = 0; i < 10; i++) digits += Math.floor(Math.random() * 10);
-  return digits;
-}

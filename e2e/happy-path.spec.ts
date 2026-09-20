@@ -9,8 +9,7 @@
 // waitForTimeout — только автоожидающие expect() и expect.poll(), которые
 // на каждой попытке дёргают tick() и проверяют реальное состояние экрана.
 
-import type { Locator } from "@playwright/test";
-import { expect, test } from "./fixtures/stand";
+import { BFF_URL, expect, test, waitForDocumentApproved } from "./fixtures/stand";
 
 const COUNTERPARTY_NAME = "Shenzhen Bay Trading Co.";
 const DEAL_AMOUNT = "50000";
@@ -22,8 +21,8 @@ test.describe("Сквозной путь сделки", () => {
     tick,
   }) => {
     // --- 1. Начинаем авторизованными, дашборд пуст ------------------------
-    const totalDealsStat = page.locator(".panel", { hasText: "Всего сделок" });
-    await expect(totalDealsStat.locator(".mono")).toHaveText("0");
+    const totalDealsCount = page.getByTestId("deals-total-count");
+    await expect(totalDealsCount).toHaveText("0");
     await expect(page.getByText("Активных сделок пока нет.")).toBeVisible();
 
     // --- 2. Создаём сделку через мастер ------------------------------------
@@ -59,7 +58,7 @@ test.describe("Сквозной путь сделки", () => {
     // Дашборд должен показать ровно одну сделку — с "Китай", а не с "CN"
     // (регрессия, которую спека прямо называет).
     await page.getByRole("link", { name: "Дашборд" }).click();
-    await expect(totalDealsStat.locator(".mono")).toHaveText("1");
+    await expect(totalDealsCount).toHaveText("1");
     const dealLink = page.locator(`a[href="/deals/${dealId}/tracking"]`);
     await expect(dealLink).toContainText("Китай");
     await expect(dealLink).toContainText(COUNTERPARTY_NAME);
@@ -81,10 +80,32 @@ test.describe("Сквозной путь сделки", () => {
 
     const cbdcCard = page.locator('[data-testid="scenario-card"][data-scenario="cbdc"]');
     await expect(cbdcCard).toBeVisible();
-    // Комиссия зависит от расчёта service-commission — тест не пересчитывает
-    // её сам (это была бы регрессия из плана 03), а только проверяет форму:
-    // число + валюта сделки, а не "Уточняется"/пусто.
-    await expect(cbdcCard).toContainText(new RegExp(`\\d[\\d\\s]*\\s${DEAL_CURRENCY}`, "u"));
+
+    // F1 (final fix wave, критично): спека §1 требует сценарий "с комиссией
+    // из commission-service", а не "с каким-то числом на экране" — прежняя
+    // проверка была регэкспом "цифры + код валюты" где угодно в карточке и
+    // пропускала "0 CNY" точно так же, как правильное значение. Тест не
+    // пересчитывает формулу комиссии сам (это была бы регрессия из плана 03
+    // — ревью уже указывало на это для recovery.spec.ts, см. F3/F4 там же),
+    // а запрашивает ту же котировку у BFF, которую в этом самом прогоне
+    // получил и отрендерил экран (GET /api/deals/:id/scenarios — тот же
+    // запрос, что делает ScenarioPage.load()), и сравнивает с тем, что
+    // показано в блоке "Стоимость" выбранной карточки. Сверка с живым
+    // сервисом, а не переизобретение его логики.
+    const scenariosRes = await page.request.get(`${BFF_URL}/api/deals/${dealId}/scenarios`);
+    expect(scenariosRes.ok(), `GET /api/deals/${dealId}/scenarios: ${scenariosRes.status()}`).toBe(true);
+    const scenariosBody = (await scenariosRes.json()) as {
+      scenarios: Array<{ id: string; commission: { total: number } | null }>;
+    };
+    const cbdcQuote = scenariosBody.scenarios.find((s) => s.id === "cbdc");
+    expect(cbdcQuote?.commission, "у сценария cbdc нет котировки комиссии").not.toBeNull();
+    const expectedTotal = cbdcQuote!.commission!.total;
+    // Ненулевое значение — "Уточняется"/0 не должны молча проходить проверку.
+    expect(expectedTotal).toBeGreaterThan(0);
+    const expectedCost = `${new Intl.NumberFormat("ru-RU").format(expectedTotal)} ${DEAL_CURRENCY}`;
+    // Локатор привязан к самому блоку "Стоимость" (data-testid="scenario-cost",
+    // ScenarioPage.tsx StatBlock), а не к regexp по всей карточке.
+    await expect(cbdcCard.getByTestId("scenario-cost")).toHaveText(expectedCost);
 
     await cbdcCard.click();
     await page.getByRole("button", { name: "Подтвердить сценарий" }).click();
@@ -99,7 +120,7 @@ test.describe("Сквозной путь сделки", () => {
     // --- 4. Документы: подать оба, довести до "Подтверждён" без reload ----
     const documentRows = page.getByTestId("document-row");
     await expect(documentRows).toHaveCount(2);
-    for (const status of await documentRows.locator("span.mono").allTextContents()) {
+    for (const status of await documentRows.getByTestId("document-status").allTextContents()) {
       expect(status).toBe("Не загружен");
     }
 
@@ -111,7 +132,7 @@ test.describe("Сквозной путь сделки", () => {
     for (let i = 0; i < rowCount; i++) {
       const row = documentRows.nth(i);
       await row.getByRole("button", { name: /Отправить на проверку/ }).click();
-      await expect(row.locator("span.mono")).not.toHaveText("Не загружен");
+      await expect(row.getByTestId("document-status")).not.toHaveText("Не загружен");
     }
 
     // Двигаем эмулятор и ждём "Подтверждён" на каждом документе. Один из
@@ -152,22 +173,3 @@ test.describe("Сквозной путь сделки", () => {
     await expect(finishedDealCard).toContainText("Завершена");
   });
 });
-
-async function waitForDocumentApproved(
-  row: Locator,
-  tick: (times?: number) => Promise<void>,
-): Promise<void> {
-  const statusBadge = row.locator("span.mono");
-  await expect.poll(
-    async () => {
-      await tick();
-      const status = await statusBadge.textContent();
-      if (status === "Отклонён") {
-        const resubmit = row.getByRole("button", { name: /Отправить на проверку/ });
-        if (await resubmit.isVisible()) await resubmit.click();
-      }
-      return status;
-    },
-    { timeout: 60_000, message: "документ не дошёл до 'Подтверждён'" },
-  ).toBe("Подтверждён");
-}

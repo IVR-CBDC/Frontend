@@ -58,4 +58,30 @@ test.describe("Истечение сессии", () => {
     await expect(page.locator("[data-app-status]")).toHaveAttribute("data-app-status", "authenticated");
     await expect(page.getByText("Активных сделок пока нет.")).toBeVisible();
   });
+
+  // F8 (final fix wave): спека §9 перечисляет "критерий готовности +
+  // логин с неверным паролем" как содержимое e2e-набора — такого сценария
+  // не было ни в одной спеке. Использует ту же company-фикстуру (реальный
+  // логин), только пароль неверный — проверяет, что BFF/service-auth
+  // отвечают ошибкой аутентификации, а не 500/пропуском на защищённый
+  // маршрут, и что форма входа остаётся рабочей (можно тут же ввести
+  // правильный пароль, без перезагрузки страницы).
+  test("вход с неверным паролем показывает ошибку и не пускает в приложение", async ({ page, company }) => {
+    await page.context().clearCookies();
+    await page.goto("/login");
+    await expect(page.getByRole("heading", { name: "Вход" })).toBeVisible();
+
+    await page.getByLabel("Логин").fill(company.login);
+    await page.getByLabel("Пароль").fill("wrong-password-definitely-not-it");
+    await page.getByRole("button", { name: "Войти" }).click();
+
+    await expect(page.getByRole("alert")).toBeVisible();
+    await expect(page).toHaveURL(/\/login$/);
+
+    // Форма не сломалась — с правильным паролем тот же экран пускает внутрь.
+    await page.getByLabel("Пароль").fill(company.password);
+    await page.getByRole("button", { name: "Войти" }).click();
+    await expect(page).toHaveURL("/");
+    await expect(page.locator("[data-app-status]")).toHaveAttribute("data-app-status", "authenticated");
+  });
 });

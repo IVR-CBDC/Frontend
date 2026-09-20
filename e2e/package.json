@@ -5,6 +5,7 @@
   "description": "Playwright end-to-end suite for Alfa Global CBDC Hub, run against an already-running stand (SPA + BFF + Backend services).",
   "type": "module",
   "scripts": {
+    "typecheck": "tsc --noEmit",
     "test": "playwright test",
     "test:ui": "playwright test --ui",
     "install-browsers": "playwright install --with-deps chromium"
