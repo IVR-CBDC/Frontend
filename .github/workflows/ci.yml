@@ -88,10 +88,13 @@ jobs:
   # (оба репозитория только локальные, `/home/legors/Documents/IVR` и
   # `/home/legors/Documents/alfa-cbdc-hub`). Она не запускалась и не
   # проходила на раннере — написана и верифицирована локально: разобрана
-  # парсером YAML (`python3 -c "import yaml; ..."`), шаги (сборка образов,
-  # gen-keys.sh, `docker compose ... up -d --build --wait`, `pnpm test` в
-  # e2e/) воспроизведены вручную командной строкой против настоящего стенда
-  # (см. отчёт задачи 3). Когда Backend-репозиторий получит remote
+  # парсером YAML (`python3 -c "import yaml; ..."`), шаги (сборка образов
+  # bff/frontend/ivr-cpp-base, `make e2e-stand-up` в backend/, `pnpm test` в
+  # e2e/) воспроизведены вручную командной строкой против настоящего стенда,
+  # включая явную проверку на раннере "как с нуля" (образ `ivr-cpp-base`
+  # удалён и пересобран заново тем же шагом, что ниже, а не унаследован от
+  # более ранней работы на этой машине — см. отчёт задачи 3, раунд 1). Когда
+  # Backend-репозиторий получит remote
   # (`IVR-CBDC/Backend`) и станет доступен для checkout из этого workflow
   # (публичный репозиторий или secrets.BACKEND_CHECKOUT_TOKEN для
   # приватного), эта джоба должна заработать без дополнительных правок —
@@ -128,6 +131,16 @@ jobs:
         working-directory: e2e
         run: pnpm install --frozen-lockfile
 
+      # Кэш браузерных бинарников Playwright (не системных apt-зависимостей,
+      # их --with-deps всё равно ставит заново каждый раз — они не в этом
+      # каталоге) — ключ по lockfile'у e2e/, где закреплена версия
+      # @playwright/test, так что смена версии сама инвалидирует кэш.
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('e2e/pnpm-lock.yaml') }}
+
       - name: Install Playwright (chromium + system deps)
         working-directory: e2e
         run: pnpm exec playwright install --with-deps chromium
@@ -137,12 +150,10 @@ jobs:
       # gen-keys.sh конвертирует PEM -> JWK через python3 + cryptography
       # (тот же скрипт и та же причина явной установки, что в Backend-
       # репозитории: GitHub не гарантирует cryptography в системном python3
-      # ubuntu-latest).
+      # ubuntu-latest). Сам gen-keys.sh запускать здесь не нужно — его
+      # вызывает `make e2e-stand-up` ниже (цель `keys`, идемпотентна).
       - name: Install python3 + cryptography (for Backend's gen-keys.sh)
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends python3 python3-cryptography
-
-      - name: Generate JWT keys (Backend)
-        run: bash backend/infra/gen-keys.sh
 
       - name: Build bff image
         uses: docker/build-push-action@v5
@@ -164,30 +175,65 @@ jobs:
           cache-from: type=gha,scope=frontend
           cache-to: type=gha,mode=max,scope=frontend
 
-      # Backend's ivr-cpp-base (drogon/libjwt, ~15-19 минут с нуля) не
-      # закэширован заранее отдельной джобой, как в самом Backend-репозитории
-      # (там джоба `cpp` кэширует его через type=gha до джобы `api`) — здесь
-      # это другой репозиторий с отдельным GHA-кэшем, так что первый прогон
-      # e2e в этом репозитории неизбежно медленный; последующие используют
-      # тот же cache-from/cache-to: type=gha, что и Backend.
-      - name: Bring up stand (EMULATOR_MANUAL=true, bff/frontend from this checkout)
+      # F (review round 1, критичная находка): service-auth/service-core
+      # Dockerfile'ы Backend-репозитория начинаются с `ARG
+      # BASE_IMAGE=ivr-cpp-base:latest` — этот образ производит сервис
+      # `cpp-base` из docker-compose.yml, но он сидит за `profiles: [build]`,
+      # а `make e2e-stand-up` (как и наша прежняя прямая команда) поднимает
+      # стенд через `--profile bff --profile frontend`, профиль `build`
+      # никогда не активируется. На этой машине образ `ivr-cpp-base:latest`
+      # уже был в локальном Docker-сторе от более ранней работы по плану, и
+      # `--build` молча его переиспользовал — но на чистом раннере, где его
+      # нет ни локально, ни в каком-либо реестре, `docker compose ... up
+      # --build` упадёт на сборке service-auth/service-core с `pull access
+      # denied` (Docker пытается стянуть `ivr-cpp-base:latest` как внешний
+      # образ). Это НЕ вопрос скорости — без этого шага джоба не может
+      # пройти в принципе, вне зависимости от checkout-по-имени. Тот же образ
+      # и тот же Dockerfile, что собирает джоба `cpp` в самом
+      # Backend-репозитории — здесь нет отдельной прогревающей джобы (кэш
+      # GHA этого, Frontend, репозитория изначально пуст), поэтому кэшируем
+      # его прямо тут: `cache-from`+`cache-to: type=gha` на этом шаге, чтобы
+      # только самый первый прогон в этом репозитории платил полную сборку
+      # (~15-19 минут), а не каждый.
+      - name: Restore/build ivr-cpp-base (needed by service-auth/service-core FROM)
+        uses: docker/build-push-action@v5
+        with:
+          context: backend/infra/docker
+          file: backend/infra/docker/cpp-base.Dockerfile
+          tags: ivr-cpp-base:latest
+          load: true
+          cache-from: type=gha,scope=cpp-base
+          cache-to: type=gha,mode=max,scope=cpp-base
+
+      # F (review round 1, важная находка): раньше здесь дублировался сырой
+      # `docker compose ... --profile bff --profile frontend up -d --build
+      # --wait` с EMULATOR_MANUAL=true в env шага — второй источник правды
+      # рядом с `make e2e-stand-up` (Backend-репозиторий, добавлена той же
+      # задачей 3), который мог разойтись с ним и молча вернуть ту самую
+      # ловушку из плана 07/задачи 2 (`EMULATOR_MANUAL` тихо сбрасывается в
+      # false). Теперь джоба вызывает саму `make e2e-stand-up` — один
+      # источник правды: EMULATOR_MANUAL=true зашито в самой цели Makefile,
+      # а не повторено здесь текстом. `ivr-cpp-base:latest` уже загружен
+      # шагом выше, поэтому проверка `docker image inspect` внутри цели
+      # находит его и не пересобирает.
+      - name: Bring up stand (make e2e-stand-up, bff/frontend from this checkout)
         working-directory: backend
         env:
           # Тот же трюк, что в Backend .github/workflows/ci.yml (джоба api):
           # docker/setup-buildx-action переключает docker CLI на builder с
           # container-драйвером, который не видит image store демона — а
           # Dockerfile'ы service-auth/service-core делают
-          # `FROM ivr-cpp-base:latest`, только что загруженный в демон.
-          # BUILDX_BUILDER=default возвращает именно этот шаг на classic
-          # docker-драйвер (тот же демон, тот же image store) — не трогая
-          # билдер, который используют шаги сборки bff/frontend выше.
+          # `FROM ${BASE_IMAGE}` (ivr-cpp-base:latest, только что загруженный
+          # в демон шагом выше). BUILDX_BUILDER=default возвращает именно
+          # этот шаг (`make e2e-stand-up` внутри вызывает `docker compose
+          # ... --build`) на classic docker-драйвер, который строит через
+          # тот же демон и видит его image store — билдер, который
+          # использовали шаги сборки bff/frontend/ivr-cpp-base выше, при
+          # этом не трогаем.
           BUILDX_BUILDER: default
           BFF_IMAGE: bff-ci:latest
           FRONTEND_IMAGE: frontend-ci:latest
-          EMULATOR_MANUAL: "true"
-        run: |
-          docker compose -f docker-compose.yml -f docker-compose.dev.yml \
-            --profile bff --profile frontend up -d --build --wait
+        run: make e2e-stand-up
 
       - name: Run Playwright suite
         working-directory: e2e
