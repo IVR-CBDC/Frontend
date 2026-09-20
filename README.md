@@ -16,7 +16,8 @@ Traefik, каждый со своей Postgres, плюс общий Redis. BFF �
 ```
 alfa-cbdc-hub/
 ├── bff/         BFF-слой (Node.js + Express + WebSocket)
-└── frontend/    Клиентское SPA (React + TypeScript + Vite, с поддержкой PWA)
+├── frontend/    Клиентское SPA (React + TypeScript + Vite, с поддержкой PWA)
+└── e2e/         Сквозные тесты (Playwright) — против уже поднятого стенда
 ```
 
 ## BFF
@@ -203,6 +204,55 @@ docker build -t frontend:local -f frontend/Dockerfile frontend
 Backend-репозитория (см. README того репозитория, раздел «Frontend SPA»),
 который поднимает `frontend` под своим профилем, потому что сам образ
 (`ghcr.io/ivr-cbdc/frontend/spa`) CI этого репозитория ещё не публикует.
+
+## E2E (Playwright)
+
+`e2e/` — сквозные тесты на Playwright (только chromium), проверяющие
+критерий готовности системы целиком: регистрация, сделка, сценарий расчёта,
+документооборот и трекинг до `completed` — на настоящем стенде (SPA + BFF +
+Backend-сервисы), без моков. Пакет самостоятельный (не workspace-член
+`bff`/`frontend`) и не поднимает стенд сам — стенд живёт в
+Backend-репозитории и запускается снаружи; `playwright.config.ts` при старте
+(`globalSetup`) только проверяет, что SPA и BFF уже отвечают, и падает с
+понятным сообщением, если нет.
+
+Тестам обязательно нужен ручной режим эмулятора Backend-репозитория
+(`EMULATOR_MANUAL=true`) — иначе прогресс сделки (проверка документов,
+комплаенс, расчёт) решает время, а не тест, и `POST /internal/emulator/tick`
+отвечает `404`. Если стенд уже поднят с `EMULATOR_MANUAL=false`, пересоздавать
+нужно только `service-core`, не весь стенд:
+
+```bash
+cd /home/legors/Documents/IVR
+EMULATOR_MANUAL=true docker compose -f docker-compose.yml -f docker-compose.dev.yml \
+  --profile bff --profile frontend up -d --wait
+# если стенд уже был поднят с EMULATOR_MANUAL=false — пересоздать только service-core:
+EMULATOR_MANUAL=true docker compose -f docker-compose.yml -f docker-compose.dev.yml \
+  up -d --wait service-core
+```
+
+```bash
+cd e2e
+pnpm install
+pnpm exec playwright install --with-deps chromium   # один раз; --with-deps требует sudo —
+                                                      # если недоступен, подойдёт install без него,
+                                                      # если системные зависимости Chromium уже стоят
+pnpm test        # прогон против уже поднятого стенда, один воркер (стенд общий)
+pnpm test:ui     # интерактивная отладка (Playwright UI)
+```
+
+Переменные окружения (не обязательны — значения по умолчанию рассчитаны на
+локальный стенд из README Backend-репозитория): `E2E_BASE_URL` (SPA, по
+умолчанию `http://127.0.0.1:8090`), `E2E_BFF_URL` (BFF,
+`http://127.0.0.1:14000`), `E2E_CORE_URL` (service-core, только для
+`/internal/emulator/tick`, `http://127.0.0.1:18081`).
+
+Каждый тест регистрирует свою компанию через API BFF (`fixtures/stand.ts`,
+фикстура `company`) — уникальный логин и ИНН на тест, общих фикстур с
+данными нет, тесты не зависят друг от друга и от порядка запуска. Прогресс
+сделки тесты двигают сами через `tick()` (`POST /internal/emulator/tick`) и
+проверяют автоожидающими `expect(...)`/`expect.poll(...)` — без
+`waitForTimeout`/`sleep`.
 
 ## Сборка для продакшена
 
