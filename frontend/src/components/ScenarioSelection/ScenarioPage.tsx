@@ -167,7 +167,11 @@ export function ScenarioPage() {
               <div style={{ display: "flex", gap: 16, marginBottom: 10 }}>
                 <StatBlock label="Срок" value={option.etaLabel} />
                 {option.available ? (
-                  <StatBlock label="Стоимость" value={costLabel(option, dealCurrency)} />
+                  <StatBlock
+                    label="Стоимость"
+                    value={costLabel(option, dealCurrency)}
+                    testId="scenario-cost"
+                  />
                 ) : (
                   // F6 (final review): у недоступности сценария своя строка,
                   // а не подмена "Стоимости".
@@ -196,11 +200,24 @@ export function ScenarioPage() {
   );
 }
 
-function StatBlock({ label, value }: { label: string; value: string }) {
+// F1 (final fix wave): "Стоимость" нужен собственный локатор для e2e —
+// без него тест сверял бы значение по CSS-классу .mono, общему с
+// "Срок"/"Недоступно" в соседних StatBlock той же карточки, и с первым же
+// добавлением второго .mono сломался бы strict mode (см. F5, тот же класс
+// проблем со span.mono статуса документа).
+function StatBlock({
+  label,
+  value,
+  testId,
+}: {
+  label: string;
+  value: string;
+  testId?: string;
+}) {
   return (
     <div>
       <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{label}</div>
-      <div className="mono" style={{ fontSize: 12.5, fontWeight: 600 }}>{value}</div>
+      <div className="mono" data-testid={testId} style={{ fontSize: 12.5, fontWeight: 600 }}>{value}</div>
     </div>
   );
 }

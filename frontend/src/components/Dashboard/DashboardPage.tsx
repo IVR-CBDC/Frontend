@@ -51,7 +51,7 @@ export function DashboardPage() {
 
       {deals && (
         <div style={{ display: "flex", gap: 18, marginBottom: 22 }}>
-          <SummaryStat label="Всего сделок" value={String(deals.length)} />
+          <SummaryStat label="Всего сделок" value={String(deals.length)} testId="deals-total-count" />
           <SummaryStat label="Требуют внимания" value={String(attentionCount)} tone={attentionCount > 0 ? "attention" : "normal"} />
           <Link to="/deals/new" className="btn btn-primary" style={{ marginLeft: "auto", alignSelf: "flex-start" }}>
             + Новая сделка
@@ -81,12 +81,23 @@ export function DashboardPage() {
   );
 }
 
-function SummaryStat({ label, value, tone = "normal" }: { label: string; value: string; tone?: "normal" | "attention" }) {
+function SummaryStat({
+  label,
+  value,
+  tone = "normal",
+  testId,
+}: {
+  label: string;
+  value: string;
+  tone?: "normal" | "attention";
+  testId?: string;
+}) {
   return (
     <div className="panel" style={{ padding: "12px 18px", minWidth: 140 }}>
       <div style={{ fontSize: 11.5, color: "var(--text-muted)" }}>{label}</div>
       <div
         className="mono"
+        data-testid={testId}
         style={{ fontSize: 22, fontWeight: 600, color: tone === "attention" ? "var(--amber-500)" : "var(--ink-900)" }}
       >
         {value}

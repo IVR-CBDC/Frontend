@@ -130,6 +130,7 @@ export function DocumentsPage() {
             <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
               <span
                 className="mono"
+                data-testid="document-status"
                 style={{ fontSize: 11.5, color: statusColor[doc.status], border: `1px solid ${statusColor[doc.status]}`, borderRadius: 3, padding: "2px 8px" }}
               >
                 {statusLabel[doc.status]}
