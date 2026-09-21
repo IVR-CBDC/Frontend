@@ -22,7 +22,11 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
 
 COPY tsconfig.json vite.config.ts index.html ./
-COPY public ./public
+# `public/` намеренно не копируется: каталог пуст, git пустые каталоги не
+# хранит, и на него ничего не ссылается — ни index.html, ни src. Локально
+# сборка проходила только потому, что каталог лежал на диске неотслеженным;
+# на чистом клоне (CI) `COPY public ./public` падает «/public: not found».
+# Появится реальная статика — вернуть строку вместе с файлами.
 COPY src ./src
 RUN pnpm build
 
