@@ -244,7 +244,21 @@ jobs:
           # PAT с read:packages в secrets.GHCR_READ_TOKEN.
           password: ${{ secrets.GHCR_READ_TOKEN || secrets.GITHUB_TOKEN }}
 
-      - name: Pull backend images (instead of building C++)
+      # Быстрый путь — стянуть готовые образы. Он работает, только если
+      # пакеты Backend-репозитория доступны этому прогону (публичные либо
+      # выдан secrets.GHCR_READ_TOKEN). Пока это не так, джоба НЕ падает:
+      # Backend — публичный репозиторий, его исходники уже лежат в
+      # ./backend (чекаут выше), и стенд можно собрать из них. Это дольше
+      # (C++ через ivr-cpp-base), но CI остаётся зелёным без ручных
+      # действий в настройках GitHub, а как только доступ появится, шаг сам
+      # вернётся на быстрый путь — менять ничего не нужно.
+      #
+      # Почему не «просто всегда собирать»: сборка drogon+libjwt без кэша
+      # это ~19 минут (замер плана 04), и ради этого шаг когда-то и
+      # переводили на pull. Выбор пути делается по факту, а не по
+      # предположению о настройках.
+      - name: Pull backend images (fall back to building them)
+        id: backend-images
         env:
           BACKEND_IMAGE_PREFIX: ghcr.io/ivr-cbdc/backend
           BACKEND_IMAGE_TAG: main
@@ -253,14 +267,44 @@ jobs:
           for s in service-auth service-core service-commission; do
             ref="$BACKEND_IMAGE_PREFIX/$s:$BACKEND_IMAGE_TAG"
             echo "::group::pull $ref"
-            docker pull "$ref" || {
-              echo "::error::не удалось стянуть $ref." \
-                   "Обычно значит, что CD Backend (deploy.yml, push в main) ещё ни разу не" \
-                   "публиковал образы, либо пакет приватный и нужен secrets.GHCR_READ_TOKEN" \
-                   "с read:packages."
-              exit 1
-            }
+            if ! docker pull "$ref"; then
+              echo "::endgroup::"
+              echo "::warning::$ref недоступен этому прогону — стенд будет собран" \
+                   "из исходников ./backend. Обычно значит, что пакет приватный:" \
+                   "сделайте пакеты ghcr публичными или выдайте secrets.GHCR_READ_TOKEN" \
+                   "с read:packages, и шаг вернётся на быстрый путь."
+              echo "mode=build" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
             echo "::endgroup::"
+          done
+          echo "mode=pull" >> "$GITHUB_OUTPUT"
+
+      # Образы не стянулись — собираем. Базовый образ C++ собирается один
+      # раз и переиспользуется всеми тремя сервисами (план 04), иначе
+      # каждый тянул бы drogon и libjwt заново.
+      # Собранные образы тегируются ТЕМИ ЖЕ именами, что и стянутые:
+      # в docker-compose.yml у сервисов `image: ${SERVICE_*_IMAGE:-…}`, и
+      # compose при сборке ставит этот тег. Поэтому следующий шаг
+      # (`make e2e-stand-up` с пустым E2E_BUILD) находит их локально и не
+      # идёт в реестр — подъём стенда одинаков для обоих путей и правок не
+      # требует.
+      - name: Build backend images from source
+        if: steps.backend-images.outputs.mode == 'build'
+        working-directory: backend
+        env:
+          SERVICE_AUTH_IMAGE: ghcr.io/ivr-cbdc/backend/service-auth:main
+          SERVICE_CORE_IMAGE: ghcr.io/ivr-cbdc/backend/service-core:main
+          SERVICE_COMMISSION_IMAGE: ghcr.io/ivr-cbdc/backend/service-commission:main
+        run: |
+          set -euo pipefail
+          make cpp-base
+          docker compose -f docker-compose.yml -f docker-compose.dev.yml \
+            build service-auth service-core service-commission
+          # Доказательство, что теги совпали с ожидаемыми: иначе стенд пойдёт
+          # в реестр за отсутствующим образом и упадёт дальше от причины.
+          for s in service-auth service-core service-commission; do
+            docker image inspect "ghcr.io/ivr-cbdc/backend/$s:main" >/dev/null
           done
 
       # F (review round 1, важная находка): раньше здесь дублировался сырой
