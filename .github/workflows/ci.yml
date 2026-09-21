@@ -293,6 +293,17 @@ jobs:
         if: steps.backend-images.outputs.mode == 'build'
         working-directory: backend
         env:
+          # docker/setup-buildx-action выше сделал текущим билдер с драйвером
+          # docker-container: он собирает в отдельном контейнере и НЕ видит
+          # image store демона. Поэтому `FROM ivr-cpp-base:latest` в
+          # сервисных Dockerfile'ах резолвился бы как попытка спуллить
+          # docker.io/library/ivr-cpp-base и падал с pull access denied —
+          # что и произошло при первом прогоне этого шага. `default`
+          # возвращает classic docker-драйвер, который строит через тот же
+          # демон и видит только что собранный базовый образ. Переменная
+          # действует только внутри шага и глобальный билдер не меняет.
+          # Та же причина и то же решение, что в Backend/.github/workflows/ci.yml.
+          BUILDX_BUILDER: default
           SERVICE_AUTH_IMAGE: ghcr.io/ivr-cbdc/backend/service-auth:main
           SERVICE_CORE_IMAGE: ghcr.io/ivr-cbdc/backend/service-core:main
           SERVICE_COMMISSION_IMAGE: ghcr.io/ivr-cbdc/backend/service-commission:main
