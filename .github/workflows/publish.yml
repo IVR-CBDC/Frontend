@@ -61,9 +61,9 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -z "$GH_TOKEN" ]]; then
-            echo "::warning::Missing BACKEND_DISPATCH_TOKEN: images published, Backend notification unavailable."
+            echo "::error::Missing BACKEND_DISPATCH_TOKEN: automatic production deployment cannot be requested."
             echo "First setup missing: BACKEND_DISPATCH_TOKEN (fine-grained Contents: write on Backend)." >> "$GITHUB_STEP_SUMMARY"
-            exit 0
+            exit 1
           fi
           [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
           jq -n --arg sha "$SOURCE_SHA" '{event_type:"frontend-images",client_payload:{source_sha:$sha}}' > /tmp/dispatch.json
