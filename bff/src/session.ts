@@ -1,0 +1,104 @@
+import type { Application, NextFunction, Request, RequestHandler, Response } from "express";
+import { decodeJwt } from "jose";
+import type { Config } from "./config.js";
+import { ApiError } from "./errors.js";
+
+
+
+
+export const COOKIE_NAME = "session";
+const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
+function getConfig(app: Application): Config {
+  const config = app.get("config") as Config | undefined;
+  if (!config) {
+    throw new Error("createApp() не установил config в app — session.ts не может работать без него");
+  }
+  return config;
+}
+
+function cookieOptions(config: Config, maxAge?: number) {
+  return {
+    httpOnly: true,
+    sameSite: "strict" as const,
+    path: "/",
+    secure: config.cookieSecure,
+    ...(maxAge !== undefined ? { maxAge } : {}),
+  };
+}
+
+
+
+
+
+
+
+
+export function setSession(res: Response, token: string): void {
+  const config = getConfig(res.req.app);
+
+  let exp: number | undefined;
+  try {
+    exp = decodeJwt(token).exp;
+  } catch {
+    exp = undefined;
+  }
+
+  const expiresInMs = exp !== undefined ? exp * 1000 - Date.now() : undefined;
+  if (expiresInMs === undefined || expiresInMs <= 0) {
+    
+    
+    
+    
+    
+    
+    
+    throw new ApiError(
+      502,
+      "UPSTREAM_CONTRACT_VIOLATION",
+      "Сервис авторизации вернул некорректный токен",
+    );
+  }
+
+  res.cookie(COOKIE_NAME, token, cookieOptions(config, expiresInMs));
+}
+
+export function clearSession(res: Response): void {
+  const config = getConfig(res.req.app);
+  
+  
+  res.clearCookie(COOKIE_NAME, cookieOptions(config));
+}
+
+export function readToken(req: Request): string | undefined {
+  const cookies = req.cookies as Record<string, string> | undefined;
+  return cookies?.[COOKIE_NAME];
+}
+
+export const requireSession: RequestHandler = (req, _res, next: NextFunction) => {
+  if (!readToken(req)) {
+    next(new ApiError(401, "UNAUTHORIZED", "Требуется авторизация"));
+    return;
+  }
+  next();
+};
+
+
+
+
+
+export const checkOrigin: RequestHandler = (req, _res, next) => {
+  if (!MUTATING_METHODS.has(req.method)) {
+    next();
+    return;
+  }
+
+  const config = getConfig(req.app);
+  const origin = req.header("Origin");
+  if (!origin || !config.allowedOrigins.includes(origin)) {
+    next(new ApiError(403, "FORBIDDEN_ORIGIN", "Запрос с недопустимого источника"));
+    return;
+  }
+
+  next();
+};

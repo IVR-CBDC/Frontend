@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.env
+.env.local
+*.log
+coverage/
+*.tsbuildinfo
+playwright-report/
+test-results/
+bff/data/

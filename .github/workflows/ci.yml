@@ -1,0 +1,401 @@
+name: CI
+
+
+
+
+
+on:
+  pull_request:
+  push:
+    branches-ignore:
+      - main
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+
+
+
+
+  bff:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: bff
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+
+
+
+
+          version: 11.3.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: bff/pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+
+
+
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.3.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Frontend (this repo)
+        uses: actions/checkout@v4
+
+      - name: Checkout Backend
+        uses: actions/checkout@v4
+        with:
+          repository: IVR-CBDC/Backend
+          path: backend
+
+
+
+
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.3.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: e2e/pnpm-lock.yaml
+
+      - name: Install e2e deps
+        working-directory: e2e
+        run: pnpm install --frozen-lockfile
+
+
+
+
+
+      - name: Typecheck e2e specs
+        working-directory: e2e
+        run: pnpm typecheck
+
+
+
+
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('e2e/pnpm-lock.yaml') }}
+
+      - name: Install Playwright (chromium + system deps)
+        working-directory: e2e
+        run: pnpm exec playwright install --with-deps chromium
+
+      - uses: docker/setup-buildx-action@v3
+
+
+
+
+
+
+      - name: Install python3 + cryptography (for Backend's gen-keys.sh)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends python3 python3-cryptography
+
+      - name: Build bff image
+        uses: docker/build-push-action@v5
+        with:
+          context: bff
+          file: bff/Dockerfile
+          tags: bff-ci:latest
+          load: true
+          cache-from: type=gha,scope=bff
+          cache-to: type=gha,mode=max,scope=bff
+
+      - name: Build frontend image
+        uses: docker/build-push-action@v5
+        with:
+          context: frontend
+          file: frontend/Dockerfile
+          tags: frontend-ci:latest
+          load: true
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      - name: Log in to ghcr (backend images)
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+
+
+
+
+          password: ${{ secrets.GHCR_READ_TOKEN || secrets.GITHUB_TOKEN }}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      - name: Pull backend images (fall back to building them)
+        id: backend-images
+        env:
+          BACKEND_IMAGE_PREFIX: ghcr.io/ivr-cbdc/backend
+          BACKEND_IMAGE_TAG: main
+        run: |
+          set -euo pipefail
+          for s in service-auth service-core service-commission; do
+            ref="$BACKEND_IMAGE_PREFIX/$s:$BACKEND_IMAGE_TAG"
+            echo "::group::pull $ref"
+            if ! docker pull "$ref"; then
+              echo "::endgroup::"
+              echo "::warning::$ref недоступен этому прогону — стенд будет собран" \
+                   "из исходников ./backend. Обычно значит, что пакет приватный:" \
+                   "сделайте пакеты ghcr публичными или выдайте secrets.GHCR_READ_TOKEN" \
+                   "с read:packages, и шаг вернётся на быстрый путь."
+              echo "mode=build" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "::endgroup::"
+          done
+          echo "mode=pull" >> "$GITHUB_OUTPUT"
+
+
+
+
+
+
+
+
+
+
+      - name: Build backend images from source
+        if: steps.backend-images.outputs.mode == 'build'
+        working-directory: backend
+        env:
+
+
+
+
+
+
+
+
+
+
+          BUILDX_BUILDER: default
+          SERVICE_AUTH_IMAGE: ghcr.io/ivr-cbdc/backend/service-auth:main
+          SERVICE_CORE_IMAGE: ghcr.io/ivr-cbdc/backend/service-core:main
+          SERVICE_COMMISSION_IMAGE: ghcr.io/ivr-cbdc/backend/service-commission:main
+        run: |
+          set -euo pipefail
+          make cpp-base
+          docker compose -f docker-compose.yml -f docker-compose.dev.yml \
+            build service-auth service-core service-commission
+
+
+          for s in service-auth service-core service-commission; do
+            docker image inspect "ghcr.io/ivr-cbdc/backend/$s:main" >/dev/null
+          done
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      - name: Preflight — e2e-stand-up target exists
+        working-directory: backend
+        run: |
+          make -n e2e-stand-up || {
+            echo "::error::make e2e-stand-up не найдена в чекауте Backend-репозитория." \
+                 "Обычно значит: ветка feat/e2e-support (план 07, задача 3) ещё не влита" \
+                 "в default branch Backend — см. комментарий над джобой e2e в этом файле" \
+                 "про обязательный порядок мержа."
+            exit 1
+          }
+
+      - name: Bring up stand (make e2e-stand-up, bff/frontend from this checkout)
+        working-directory: backend
+        env:
+
+
+
+
+
+
+
+          E2E_BUILD: ""
+          BFF_IMAGE: bff-ci:latest
+          FRONTEND_IMAGE: frontend-ci:latest
+
+
+
+          SERVICE_AUTH_IMAGE: ghcr.io/ivr-cbdc/backend/service-auth:main
+          SERVICE_CORE_IMAGE: ghcr.io/ivr-cbdc/backend/service-core:main
+          SERVICE_COMMISSION_IMAGE: ghcr.io/ivr-cbdc/backend/service-commission:main
+        run: make e2e-stand-up
+
+      - name: Run Playwright suite
+        working-directory: e2e
+        run: pnpm test
+
+
+
+
+
+
+
+
+      - name: Dump backend compose logs on failure
+        if: failure()
+        working-directory: backend
+        run: |
+
+
+
+          docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.e2e.yml \
+            --profile bff --profile frontend logs > e2e-compose-logs.txt 2>&1 || true
+
+      - name: Upload failure artifacts (traces, report, compose logs)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-failure-artifacts
+          path: |
+            e2e/playwright-report
+            e2e/test-results
+            backend/e2e-compose-logs.txt
+          if-no-files-found: ignore
