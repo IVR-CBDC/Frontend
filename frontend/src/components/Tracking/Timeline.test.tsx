@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Timeline } from "./Timeline";
 import type { TimelineEvent } from "../../types/api";
 
@@ -24,6 +24,14 @@ const EVENTS: TimelineEvent[] = [
 ];
 
 describe("Timeline", () => {
+  beforeEach(() => {
+    vi.stubGlobal("ResizeObserver", class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    });
+  });
+
   it("показывает участника каждого шага", () => {
     render(<Timeline events={EVENTS} />);
     fireEvent.click(screen.getAllByRole("button", { name: /Подробнее/ })[0]);

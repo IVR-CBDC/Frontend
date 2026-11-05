@@ -1,21 +1,30 @@
+
+
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api/client";
 
 function decodeKey(value: string): Uint8Array {
-  const padded = value.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(value.length / 4) * 4, "=");
+  const padded = value
+    .replace(/-/g, "+")
+    .replace(/_/g, "/")
+    .padEnd(Math.ceil(value.length / 4) * 4, "=");
   const binary = atob(padded);
   return Uint8Array.from(binary, (character) => character.charCodeAt(0));
 }
 
 export function usePushNotifications(companyId?: string) {
   const [supported, setSupported] = useState(false);
-  const [permission, setPermission] = useState<NotificationPermission>("default");
+  const [permission, setPermission] =
+    useState<NotificationPermission>("default");
   const [busy, setBusy] = useState(false);
   const [subscribed, setSubscribed] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
   useEffect(() => {
-    const available = "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+    const available =
+      "serviceWorker" in navigator &&
+      "PushManager" in window &&
+      "Notification" in window;
     setSupported(available);
     if (available) setPermission(Notification.permission);
   }, []);
@@ -35,16 +44,25 @@ export function usePushNotifications(companyId?: string) {
       let subscription = await registration.pushManager.getSubscription();
       if (!subscription) {
         const { publicKey } = await api.getPushPublicKey();
+        const vapidKey = decodeKey(publicKey);
+        const applicationServerKey = new ArrayBuffer(vapidKey.byteLength);
+
+        new Uint8Array(applicationServerKey).set(vapidKey);
+
         subscription = await registration.pushManager.subscribe({
           userVisibleOnly: true,
-          applicationServerKey: decodeKey(publicKey),
+          applicationServerKey,
         });
       }
       await api.savePushSubscription(subscription.toJSON());
       setSubscribed(true);
       setMessage("Push-уведомления включены");
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Не удалось включить push-уведомления");
+      setMessage(
+        error instanceof Error
+          ? error.message
+          : "Не удалось включить push-уведомления",
+      );
     } finally {
       setBusy(false);
     }
@@ -64,7 +82,8 @@ export function usePushNotifications(companyId?: string) {
           setSubscribed(false);
         }
       } catch {
-        if (!cancelled) setMessage("Не удалось обновить регистрацию push-уведомлений");
+        if (!cancelled)
+          setMessage("Не удалось обновить регистрацию push-уведомлений");
       }
     })();
     return () => {
